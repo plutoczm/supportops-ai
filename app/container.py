@@ -16,6 +16,8 @@ from app.retrieval import (
     InMemoryDenseRetriever,
     OpenAICompatibleEmbedding,
     QdrantDenseRetriever,
+    RetrievalBackendError,
+    UnavailableDenseRetriever,
 )
 from app.router import IntentRouter
 from app.store import SupportStore
@@ -50,7 +52,7 @@ def build_container(settings: Settings | None = None) -> ServiceContainer:
             api_key=settings.llm_api_key,
         )
 
-    documents = default_knowledge_documents()
+    documents = default_knowledge_documents(settings.knowledge_sources_path)
     if settings.embedding_backend == "deterministic":
         embedding_provider = DeterministicHashEmbedding()
     elif settings.production_embeddings_enabled:
@@ -59,34 +61,43 @@ def build_container(settings: Settings | None = None) -> ServiceContainer:
             model=settings.embedding_model or "",
             api_key=settings.embedding_api_key,
             dimension=settings.embedding_dimension,
+            timeout_seconds=settings.embedding_timeout_seconds,
         )
     else:
         raise ValueError(
             "EMBEDDING_BACKEND=openai requires EMBEDDING_BASE_URL and EMBEDDING_MODEL"
         )
 
-    if settings.knowledge_backend == "local":
-        dense_retriever = InMemoryDenseRetriever(documents, embedding_provider)
-    elif settings.knowledge_backend == "qdrant":
-        if settings.embedding_backend != "openai":
-            raise ValueError(
-                "KNOWLEDGE_BACKEND=qdrant requires EMBEDDING_BACKEND=openai; "
-                "the deterministic embedding is CI/local-only"
+    try:
+        if settings.knowledge_backend == "local":
+            dense_retriever = InMemoryDenseRetriever(documents, embedding_provider)
+        elif settings.knowledge_backend == "qdrant":
+            if settings.embedding_backend != "openai":
+                raise ValueError(
+                    "KNOWLEDGE_BACKEND=qdrant requires EMBEDDING_BACKEND=openai; "
+                    "the deterministic embedding is CI/local-only"
+                )
+            dense_retriever = QdrantDenseRetriever(
+                documents,
+                embedding_provider,
+                url=settings.qdrant_url,
+                api_key=settings.qdrant_api_key,
+                collection=settings.qdrant_collection,
+                timeout_seconds=settings.qdrant_timeout_seconds,
+                sync_on_start=settings.qdrant_sync_on_start,
             )
-        dense_retriever = QdrantDenseRetriever(
-            documents,
-            embedding_provider,
-            url=settings.qdrant_url,
-            api_key=settings.qdrant_api_key,
-            collection=settings.qdrant_collection,
-        )
-    else:
-        raise ValueError("KNOWLEDGE_BACKEND must be 'local' or 'qdrant'")
+        else:
+            raise ValueError("KNOWLEDGE_BACKEND must be 'local' or 'qdrant'")
+    except RetrievalBackendError as exc:
+        if not settings.retrieval_allow_sparse_fallback:
+            raise
+        dense_retriever = UnavailableDenseRetriever(exc)
 
     retriever = HybridRetriever(
         documents,
         dense_retriever=dense_retriever,
         sparse_retriever=BM25Retriever(documents),
+        allow_sparse_fallback=settings.retrieval_allow_sparse_fallback,
     )
 
     auth = AuthService(settings)
