@@ -10,6 +10,12 @@ def test_policy_questions_do_not_become_refund_actions():
     assert router.route("我要退款 ORD-1001").intent is Intent.REFUND
 
 
+def test_shipping_policy_without_order_id_is_knowledge_not_order_status():
+    router = IntentRouter()
+    assert router.route("how does shipping policy work?").intent is Intent.KNOWLEDGE
+    assert router.route("shipping status ORD-1001").intent is Intent.ORDER_STATUS
+
+
 def test_mutating_policy_never_auto_allows():
     policy = ActionPolicy(refund_human_review_threshold=500)
     assert policy.refund(199).action is PolicyAction.REQUIRE_CONFIRMATION
