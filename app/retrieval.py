@@ -157,7 +157,13 @@ class OpenAICompatibleEmbedding:
 
 
 class BM25Retriever:
-    def __init__(self, documents: list[RetrievalDocument], *, k1: float = 1.5, b: float = 0.75) -> None:
+    def __init__(
+        self,
+        documents: list[RetrievalDocument],
+        *,
+        k1: float = 1.5,
+        b: float = 0.75,
+    ) -> None:
         self.documents = documents
         self.k1 = k1
         self.b = b
