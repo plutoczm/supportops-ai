@@ -284,11 +284,17 @@ class HybridRetriever:
         dense_retriever: InMemoryDenseRetriever | QdrantDenseRetriever,
         sparse_retriever: BM25Retriever | None = None,
         rrf_k: int = 60,
+        dense_weight: float = 1.0,
+        sparse_weight: float = 1.5,
     ) -> None:
+        if dense_weight <= 0 or sparse_weight <= 0:
+            raise ValueError("RRF weights must be positive")
         self.documents = documents
         self.dense = dense_retriever
         self.sparse = sparse_retriever or BM25Retriever(documents)
         self.rrf_k = rrf_k
+        self.dense_weight = dense_weight
+        self.sparse_weight = sparse_weight
 
     def search(self, query: str, *, limit: int = 3, prefetch: int = 10) -> list[RetrievalHit]:
         dense = self.dense.search(query, limit=prefetch)
@@ -306,9 +312,9 @@ class HybridRetriever:
             document = by_id[document_id]
             fused = 0.0
             if document_id in dense_rank:
-                fused += 1.0 / (self.rrf_k + dense_rank[document_id])
+                fused += self.dense_weight / (self.rrf_k + dense_rank[document_id])
             if document_id in sparse_rank:
-                fused += 1.0 / (self.rrf_k + sparse_rank[document_id])
+                fused += self.sparse_weight / (self.rrf_k + sparse_rank[document_id])
 
             sparse_raw = sparse_score.get(document_id, 0.0)
             dense_raw = dense_score.get(document_id, 0.0)
