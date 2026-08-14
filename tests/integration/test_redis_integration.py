@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 from redis import Redis
+
 from app.reliability import RedisReliabilityCoordinator
 
 pytestmark = [
