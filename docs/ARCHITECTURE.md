@@ -1,198 +1,154 @@
 # Architecture
 
-## Trust model
+## Trust and state model
 
-SupportOps AI treats model output, user-provided identifiers and external retrieval/tool adapters as untrusted. Identity, authorization, business policy and mutation confirmation are application concerns rather than model decisions.
+SupportOps AI treats model output, user-provided identifiers and external adapters as untrusted. Identity, authorization, business policy, confirmation and mutation coordination are application responsibilities.
 
 ```text
-                 Identity Provider
-                       |
-                 signed access token
-                       |
-        +--------------+--------------+
-        |                             |
-   FastAPI resource              MCP resource
-      boundary                      boundary
-        |                             |
-        +-------- verified Principal -+
-                       |
-                  Guardrails
-                       |
-                  Intent Router
-                 /      |       \
-         Knowledge    reads    mutations
-            |            |         |
-       Hybrid RAG     customer      policy
-            |         scoped        gate
-        evidence                      |
-                       +--------------+--------------+
-                       |                             |
-                customer confirm                 human ticket
-                       |                             |
-                  idempotent                    SLA/assignment
-                    execute                      state machine
-                       |                             |
-                       +------------ audit ----------+
+Identity Provider
+      |
+verified Principal
+      |
+Guardrails -> Intent Router
+      |
++-----+----------------------+------------------+
+|                            |                  |
+Knowledge/RAG             read tools        mutation intent
+|                            |                  |
+answerability             customer scope       policy
+                                                |
+                                      persisted pending action
+                                                |
+                                      authenticated confirmation
+                                                |
+                                      Redis action-scoped lock
+                                                |
+                                      re-read PostgreSQL state
+                                      + expiry + customer scope
+                                                |
+                                      idempotency-keyed tool
+                                                |
+                                      receipt / terminal state
+                                                |
+                                             audit
 ```
+
+## Durable state vs distributed coordination
+
+The architecture intentionally does **not** make Redis the system of record.
+
+### PostgreSQL owns durable facts
+
+- order/ticket state;
+- pending action kind, payload and status;
+- `created_at` and durable `expires_at`;
+- action receipt keyed by the action/idempotency key;
+- audit history.
+
+Alembic revision `20260814_0002` adds the pending-action lifetime fields and indexes `expires_at`. Existing pre-v0.5 pending rows are backfilled to immediate expiry instead of being granted a new unbounded confirmation window.
+
+### Redis owns coordination/control-plane state
+
+- short action-scoped lease lock;
+- confirmation TTL mirror;
+- principal/scoped fixed-window request counters.
+
+Local development can use an in-process coordinator, but that mode only coordinates one Python process and is not suitable as a multi-replica safety boundary.
+
+## Mutation resolution algorithm
+
+For a pending refund/return confirmation:
+
+```text
+read pending action + customer scope
+          |
+terminal? +---- yes -> return persisted terminal result
+          |
+acquire action lock (SET NX PX in Redis)
+          |
+          +---- busy -> 409 resolution in progress
+          +---- Redis error + fail-closed -> 503, no mutation
+          |
+re-read pending action inside lock
+          |
+terminal? +---- yes -> return persisted terminal result
+          |
+check durable expires_at
+          |
+expired?  +---- yes -> persist EXPIRED, no mutation
+          |
+execute business tool with action_id as idempotency key
+          |
+persist receipt + terminal action state
+          |
+release lock only if token still owns the Redis key
+```
+
+The second read inside the lock matters: two replicas can both observe `PENDING` before one obtains the lease. The lock prevents both from proceeding from the same stale pre-lock read.
+
+The Redis lock is acquired with a random token and `SET NX PX`; release uses a token-check Lua script so a process cannot delete a lease that expired and was subsequently acquired by another process.
+
+## Exactly-once boundary
+
+The implementation does **not** claim exactly-once execution. The lock lease has a fixed TTL and currently has no heartbeat/renewal. If a downstream mutation exceeds the configured lease, another replica can eventually obtain the lock. Therefore:
+
+- the lease must be longer than the expected synchronous mutation latency;
+- `action_id` remains the application idempotency key;
+- the local database receipt protects retried local mutations;
+- a real external refund/payment provider must also support/receive the same idempotency key;
+- lease renewal or a durable job/outbox workflow is the next step if mutations become long-running.
+
+## Confirmation lifetime
+
+`expires_at` is durable PostgreSQL state. Redis stores a TTL mirror for fast coordination/visibility, but Redis restart/key loss does not redefine the business expiry. Confirmation checks always use the database deadline.
+
+An expired pending action transitions to `EXPIRED` and returns a terminal `{expired: true}` result without calling the business mutation tool.
+
+## Rate limiting
+
+Redis uses an atomic Lua-backed **fixed-window** counter. Current API scopes include support messages and action confirmations. Counters are keyed by authenticated principal subject plus scope.
+
+Exceeded limits return HTTP 429 and `Retry-After`. This is intentionally described as fixed-window; it is not a sliding-window or token-bucket implementation.
+
+## Failure policy matrix
+
+| Dependency/operation | Default behavior | Rationale |
+|---|---|---|
+| Redis startup in Redis deployment mode | fail fast | do not start a replica that cannot provide configured coordination |
+| Redis action-lock/TTL refresh before mutation | fail closed | no side effect when cross-replica coordination is unavailable |
+| action lock busy | 409 | another resolution may be in flight |
+| rate-limit Redis failure | fail open (configurable) | limiter outage should not automatically take down support/read traffic |
+| dense retrieval failure | visible BM25 fallback when enabled | availability with explicit degradation; answerability threshold unchanged |
+| dense retrieval failure in strict mode | fail fast/propagate | avoid silently changing configured semantics |
+
+Lock-release or TTL-cleanup failures **after** a completed mutation are audited as degraded; they do not roll back a business mutation whose durable receipt/state has already been written.
 
 ## Identity and authorization
 
-Production HTTP mode verifies JWT signature, issuer, audience, required temporal claims and subject before creating a `Principal`. Customer identity is derived from validated claims, not message/action payloads. `support_agent` and `support_admin` roles gate the human workspace.
+Production HTTP mode verifies JWT signature, issuer, audience, required temporal claims and subject before creating a principal. Customer identity is derived from validated claims, not payload fields. MCP Streamable HTTP follows the same server-side customer-scope principle and deliberately omits the final mutation-confirmation tool.
 
-MCP Streamable HTTP uses the SDK resource-server hooks. Customer-facing MCP tools do not accept `customer_id`; customer scope comes from the verified access token. The MCP surface intentionally prepares refund requests but does not expose the final confirmation/execution step.
+## Knowledge lifecycle and retrieval
 
-## Knowledge lifecycle
+Versioned bundled knowledge records are deterministically chunked into stable `document_id:version:ordinal` identities with SHA-256 content hashes. Qdrant dense synchronization compares desired chunk hashes against remote payload metadata, embeds/upserts changed chunks only and deletes stale vectors. BM25 stays application-side; weighted RRF, score-aware reranking and the answerability gate remain common to local and Qdrant modes.
 
-The active knowledge set is stored as versioned source records rather than a Python constant:
+The local deterministic vector is a regression representation, not a semantic embedding model. Qdrant integration uses a real service but does not claim cluster HA or external-model semantic quality.
 
-```text
-Knowledge source
-  document_id
-  version
-  title
-  text
-  source_uri
-        |
-        v
-Deterministic chunker
-        |
-        +--> stable chunk_id: document_id:version:ordinal
-        +--> SHA-256 content_hash
-        +--> source/version lineage
-        |
-        v
-RetrievalDocument
-```
+## Human workflow and audit
 
-The current source is a bundled JSON artifact. This gives deterministic version/chunk provenance and reproducible packaging, but it is not yet a multi-user document-management or publication system.
+Tickets maintain priority, assignee, SLA deadline and validated state transitions. Business tools, policy decisions, knowledge degradation, action preparation/expiry/cancellation/execution and ticket transitions emit durable trace-linked audit records.
 
-Citations expose `document_id`, `document_version`, `chunk_id` and `source_uri`. Knowledge-search audit events record chunk IDs and document versions so a support answer can be traced to the evidence version used at request time.
+## Release/CI contract
 
-## Hybrid retrieval path
+GitHub Actions starts PostgreSQL 17, standalone Redis 7.4 and Qdrant v1.18.2. It verifies Alembic upgrade/drift, unit/coverage gates, the 140-case safety set, 60-case retrieval set, real Redis reliability integration, real Qdrant lifecycle integration and Docker build.
 
-```text
-                         +--> BM25 sparse retrieval --------+
-                         |                                   |
-query -> tokenize -------+                                   |
-                         |                                   v
-                         +--> embedding provider -> dense -> weighted RRF
-                                   |                         |
-                       deterministic local                  v
-                         or production                score-aware rerank
-                           embedding                        |
-                                   |                         v
-                            in-memory/Qdrant             evidence score
-                                                             |
-                                                             v
-                                                     answerability gate
-                                                      /             \
-                                                 citations         abstain
-                                                     |
-                                              grounded composer
-```
+Current adapter boundaries:
 
-### Local deterministic mode
+- FastAPI API; JWT/JWKS or explicit dev principal headers;
+- SQLAlchemy + PostgreSQL/SQLite; Alembic schema evolution;
+- Redis local/standalone coordination adapter;
+- MCP Python SDK v2;
+- OpenAI-compatible optional LLM and embedding providers;
+- BM25 + in-memory/Qdrant dense retrieval;
+- versioned bundled JSON knowledge source.
 
-CI cannot depend on a paid API or downloaded embedding model. The local dense leg therefore uses a deterministic hashed representation. It is useful for reproducible regression testing but is **not a semantic embedding model**.
-
-### Production-capable dense mode
-
-`EMBEDDING_BACKEND=openai` calls an OpenAI-compatible `/embeddings` endpoint. `KNOWLEDGE_BACKEND=qdrant` stores and queries named dense vectors in Qdrant. BM25 remains application-side sparse retrieval, followed by the same weighted-RRF, deterministic reranker and answerability gate.
-
-The application rejects Qdrant with the deterministic hash embedding. The current implementation also does not claim Qdrant sparse vectors or a learned cross-encoder reranker.
-
-## Incremental Qdrant synchronization
-
-Qdrant payload metadata includes stable index/chunk identity, source lineage and `content_hash`. Startup synchronization compares the desired source state with remote payload metadata:
-
-```text
-collection missing -> embed all -> create -> upsert all
-collection exists  -> scroll remote metadata
-                   -> unchanged hash: no embedding/upsert
-                   -> changed hash: embed + upsert changed chunk only
-                   -> remote id absent from desired state: delete stale vector
-```
-
-`IndexSyncStats` reports desired, embedded, upserted, deleted and unchanged chunk counts. This removes the previous behavior where every process start re-embedded and rewrote the complete knowledge set.
-
-The current sync is a bounded single-process startup synchronization mechanism. It is **not** a distributed indexing coordinator, queue-driven ingestion service or transactional multi-replica publication protocol.
-
-## Retrieval failure/degradation boundary
-
-Embedding and vector-store failures are converted to typed retrieval reasons rather than arbitrary provider exceptions. Current reasons include embedding timeout/rate-limit/provider/invalid-response and Qdrant index/search failures.
-
-With `RETRIEVAL_ALLOW_SPARSE_FALLBACK=true`:
-
-```text
-dense startup/search failure
-          |
-          v
- typed RetrievalBackendError
-          |
-          +--> dense unavailable
-          +--> BM25 remains available
-          +--> retrieval_degraded=true
-          +--> explicit degradation_reason
-          +--> audit outcome=degraded
-```
-
-With fallback disabled, the same error propagates and startup/search fails fast. The fallback is an availability policy, not a claim that sparse-only retrieval is equivalent to the configured dense system.
-
-## Answerability and citations
-
-Retrieval ranking and answerability are separate decisions. A result must clear the evidence threshold before citations are exposed. Unsupported questions are expected to return no evidence and trigger an insufficient-evidence/human-support response. This invariant also applies during sparse-only degradation; the system does not lower the answerability threshold just because the dense backend failed.
-
-## Mutation safety invariants
-
-1. Model output never authorizes a refund or return.
-2. Customer identity never comes from an LLM-selected business-tool argument.
-3. Cross-customer order/ticket reads fail without leaking resource existence.
-4. Refund/return side effects require a persisted pending action and authenticated confirmation.
-5. High-value refunds enter human review.
-6. MCP does not expose the final mutation-confirmation step.
-7. Action IDs are idempotency keys.
-8. A customer can cancel a pending action without a mutation.
-9. Prompt-injection detection runs before model/tool execution.
-10. Business-tool, policy and ticket operations emit trace-linked audit records.
-11. Insufficient retrieval evidence fails closed into abstention.
-12. Dense retrieval failure is visible and policy-controlled; it cannot silently masquerade as a successful dense request.
-
-## Human ticket workflow
-
-```text
-open -> assigned -> pending_customer -> assigned
-          |                |
-          +------------> resolved -> closed
-                           |
-                           +-------> open (reopen)
-```
-
-A ticket cannot be resolved before assignment, and closed tickets cannot be reassigned.
-
-## Database release path
-
-Production schema evolution is owned by Alembic. CI starts PostgreSQL 17 and runs `upgrade head`, `current --check-heads` and `alembic check`, failing when ORM metadata requires an uncommitted migration.
-
-## CI adapter contract
-
-The CI job now starts PostgreSQL 17 and a real Qdrant v1.18.2 service. After deterministic unit/eval gates, it installs the optional `rag` dependency and runs Qdrant lifecycle integration through a local HTTP server implementing the OpenAI-compatible embedding protocol.
-
-That integration verifies protocol compatibility and index lifecycle behavior against a real vector-store process. The mock embedding representation is deterministic, so the test does **not** establish external embedding semantic quality or Qdrant high availability.
-
-## Current adapters
-
-- API: FastAPI
-- Authentication: development headers or JWT/JWKS resource server
-- Persistence: SQLAlchemy; SQLite local tests; PostgreSQL deployment/CI
-- Schema evolution: Alembic
-- Model: optional OpenAI-compatible chat completions
-- Embeddings: deterministic local representation or OpenAI-compatible endpoint
-- MCP: official Python SDK v2
-- Sparse retrieval: application-side BM25
-- Dense retrieval: in-memory or Qdrant named dense vectors
-- Fusion/reranking: weighted RRF + deterministic score-aware reranker
-- Knowledge source: versioned bundled JSON + deterministic chunker
-- Index lifecycle: content-addressed changed-only Qdrant sync + stale deletion
-- Evaluation: 140-case routing/safety, 60-case retrieval, stateful unit tests and real Qdrant lifecycle integration
-
-Redis-backed distributed state, OTel/SLO export, external knowledge publication workflows, larger held-out semantic datasets and learned rerankers remain separate measurable milestones.
+Not yet claimed: Redis Sentinel/Cluster HA, lock renewal, distributed exactly-once execution, external payment-provider idempotency verification, OpenTelemetry/Prometheus SLOs, external knowledge publication workflows or production semantic/model quality.
