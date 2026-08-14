@@ -72,6 +72,9 @@ class KnowledgeCitation(BaseModel):
     title: str
     snippet: str
     score: float = Field(ge=0.0)
+    source_uri: str | None = None
+    document_version: str | None = None
+    chunk_id: str | None = None
 
 
 class OrderView(BaseModel):
@@ -122,6 +125,8 @@ class SupportResponse(BaseModel):
     ticket_id: str | None = None
     handoff: bool = False
     safety_labels: list[str] = Field(default_factory=list)
+    retrieval_degraded: bool = False
+    retrieval_degradation_reason: str | None = None
 
 
 class ConfirmationRequest(BaseModel):
