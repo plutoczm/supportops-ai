@@ -6,6 +6,16 @@ services:
       DATABASE_AUTO_CREATE_SCHEMA: "false"
       SEED_DEMO_DATA: "true"
       REFUND_HUMAN_REVIEW_THRESHOLD: "500"
+      KNOWLEDGE_BACKEND: ${KNOWLEDGE_BACKEND:-local}
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-deterministic}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-}
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-supportops_knowledge}
+      RETRIEVAL_MIN_EVIDENCE_SCORE: ${RETRIEVAL_MIN_EVIDENCE_SCORE:-0.16}
     ports:
       - "8000:8000"
     depends_on:
@@ -26,5 +36,14 @@ services:
     volumes:
       - supportops-postgres:/var/lib/postgresql/data
 
+  qdrant:
+    image: qdrant/qdrant:v1.15.5
+    profiles: ["rag"]
+    ports:
+      - "6333:6333"
+    volumes:
+      - supportops-qdrant:/qdrant/storage
+
 volumes:
   supportops-postgres:
+  supportops-qdrant:
