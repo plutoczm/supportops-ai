@@ -22,17 +22,17 @@ SupportOps AI treats model output, user-provided identifiers and tool arguments 
                  /      |       \
          Knowledge    reads    mutations
             |            |         |
-         evidence    customer      policy
-                     scoped        gate
-                                    |
-                       +------------+------------+
-                       |                         |
-                customer confirm             human ticket
-                       |                         |
-                  idempotent                SLA/assignment
-                    execute                  state machine
-                       |                         |
-                       +---------- audit --------+
+       Hybrid RAG     customer      policy
+            |         scoped        gate
+        evidence                      |
+                       +--------------+--------------+
+                       |                             |
+                customer confirm                 human ticket
+                       |                             |
+                  idempotent                    SLA/assignment
+                    execute                      state machine
+                       |                             |
+                       +------------ audit ----------+
 ```
 
 ## Identity and authorization
@@ -49,6 +49,47 @@ Streamable HTTP JWT mode uses the MCP SDK resource-server hooks (`TokenVerifier`
 
 `stdio` and in-memory clients do not have the HTTP bearer-token layer, so local tests use an explicit server-side demo customer configuration. This is a different trust boundary, not a production authentication substitute.
 
+## Hybrid retrieval path
+
+Retrieval is a bounded application subsystem rather than a direct `query -> LLM` shortcut.
+
+```text
+                         +--> BM25 sparse retrieval --------+
+                         |                                   |
+query -> tokenize -------+                                   |
+                         |                                   v
+                         +--> embedding provider -> dense -> weighted RRF
+                                   |                         |
+                       local deterministic                  v
+                           or production              score-aware rerank
+                             embedding                      |
+                                   |                         v
+                              local memory              evidence score
+                              or Qdrant                     |
+                                                           v
+                                                   answerability gate
+                                                    /             \
+                                               citations         abstain
+                                                   |
+                                            grounded composer
+```
+
+### Local/CI retrieval
+
+CI must not depend on paid APIs or a downloaded embedding model. The local dense leg therefore uses a deterministic hashed-vector representation. It is reproducible and useful as a regression signal but is **not a semantic embedding model**.
+
+The sparse leg is BM25. Dense and sparse candidate lists are first fused with weighted reciprocal-rank fusion. A deterministic second-stage reranker then uses normalized BM25 score, dense score, query/title coverage and the fused rank signal. Ranking is intentionally separate from the evidence score used for answerability.
+
+### Production retrieval
+
+`EMBEDDING_BACKEND=openai` uses an OpenAI-compatible `/embeddings` endpoint. `KNOWLEDGE_BACKEND=qdrant` stores and queries the resulting **dense vectors** in Qdrant. The application still runs BM25 for the sparse leg and applies the same fusion/reranking/answerability contract.
+
+The current implementation does **not** claim Qdrant sparse-vector indexing, document ingestion pipelines, a learned cross-encoder reranker, or production semantic-quality metrics. Those remain separate measurable milestones.
+
+### Answerability and citations
+
+A retrieval result must clear an evidence threshold before the Knowledge service exposes citations. Unsupported queries are expected to return no citation and trigger an insufficient-evidence/human-support response. Deterministic answers retain `[KB-...]` source ids; optional model-generated answers are prompted to retain supplied source ids for factual policy claims.
+
 ## Mutation safety invariants
 
 1. Model output never directly authorizes a refund or return.
@@ -61,6 +102,7 @@ Streamable HTTP JWT mode uses the MCP SDK resource-server hooks (`TokenVerifier`
 8. A customer can cancel a pending action without a business mutation.
 9. Prompt-injection detection runs before model and tool execution.
 10. Tool and policy operations emit durable audit records keyed by trace and actor.
+11. Insufficient retrieval evidence must fail closed into abstention rather than inventing a support policy.
 
 ## Human ticket workflow
 
@@ -89,8 +131,11 @@ CI starts a clean PostgreSQL 17 service and executes `upgrade head`, `current --
 - Persistence: SQLAlchemy, SQLite locally, PostgreSQL in Docker Compose
 - Schema evolution: Alembic migrations, validated against PostgreSQL in CI
 - Model: optional OpenAI-compatible chat-completions endpoint
+- Embeddings: deterministic local fallback or OpenAI-compatible embedding endpoint
 - MCP: official Python SDK v2
-- Retrieval: deterministic local evidence baseline
-- Evaluation: deterministic routing/safety benchmark plus integration tests
+- Sparse retrieval: application-side BM25
+- Dense retrieval: in-memory adapter or Qdrant dense-vector adapter
+- Fusion/reranking: weighted RRF plus deterministic score-aware reranker
+- Evaluation: 140-case routing/safety benchmark, 60-case retrieval benchmark, and stateful integration tests
 
-Hybrid retrieval and distributed state adapters are intentionally separate future milestones so their benefit can be measured rather than added as architecture decoration.
+Distributed state, production ingestion/versioning and learned rerankers remain separate future milestones so their benefit can be measured rather than added as architecture decoration.
