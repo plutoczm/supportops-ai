@@ -38,7 +38,14 @@ def main() -> None:
                 }
             )
 
-        rank = next((index for index, doc_id in enumerate(ranked_ids, 1) if doc_id in relevant), None)
+        rank = next(
+            (
+                index
+                for index, doc_id in enumerate(ranked_ids, 1)
+                if doc_id in relevant
+            ),
+            None,
+        )
         if rank is not None and rank <= 3:
             recall_at_3 += 1
             reciprocal_rank_sum += 1.0 / rank
