@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
@@ -40,9 +41,15 @@ class TicketStatus(StrEnum):
     CLOSED = "closed"
 
 
+class TicketPriority(StrEnum):
+    URGENT = "urgent"
+    HIGH = "high"
+    NORMAL = "normal"
+    LOW = "low"
+
+
 class SupportRequest(BaseModel):
     conversation_id: str = Field(min_length=1, max_length=128)
-    customer_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=8000)
 
 
@@ -83,6 +90,12 @@ class TicketView(BaseModel):
     conversation_id: str
     reason: str
     status: TicketStatus
+    priority: TicketPriority
+    assignee_id: str | None = None
+    sla_due_at: datetime
+    sla_breached: bool
+    created_at: datetime
+    updated_at: datetime
 
 
 class PendingActionView(BaseModel):
@@ -112,7 +125,7 @@ class SupportResponse(BaseModel):
 
 
 class ConfirmationRequest(BaseModel):
-    customer_id: str = Field(min_length=1, max_length=128)
+    confirm: bool = True
 
 
 class ConfirmationResponse(BaseModel):
@@ -120,3 +133,24 @@ class ConfirmationResponse(BaseModel):
     action_id: str
     status: PendingActionStatus
     result: dict[str, Any]
+
+
+class TicketAssignRequest(BaseModel):
+    assignee_id: str = Field(min_length=1, max_length=128)
+
+
+class TicketTransitionRequest(BaseModel):
+    status: TicketStatus
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class AuditEventView(BaseModel):
+    event_id: str
+    trace_id: str
+    actor_id: str
+    operation: str
+    resource_type: str
+    resource_id: str | None
+    outcome: str
+    details: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
