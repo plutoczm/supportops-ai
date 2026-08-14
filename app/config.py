@@ -13,7 +13,7 @@ class Settings:
     refund_human_review_threshold: float = 500.0
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         return cls(
             database_url=os.getenv("DATABASE_URL", "sqlite:///./supportops.db"),
             llm_base_url=os.getenv("LLM_BASE_URL") or None,

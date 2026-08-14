@@ -26,7 +26,10 @@ def get_order(order_id: str, customer_id: str) -> dict[str, object]:
 
 @mcp.tool()
 def request_refund(order_id: str, customer_id: str, conversation_id: str) -> dict[str, object]:
-    """Prepare a refund request. This tool cannot execute a refund; customer confirmation is required."""
+    """Prepare a refund request without executing the refund.
+
+    Customer confirmation remains required through the application API.
+    """
     response = container.orchestrator.prepare_refund(
         customer_id=customer_id,
         conversation_id=conversation_id,

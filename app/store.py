@@ -4,7 +4,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import JSON, Float, String, create_engine, select
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from app.domain import (
     OrderView,

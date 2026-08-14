@@ -73,8 +73,9 @@ class KnowledgeService:
         )
         system = (
             "You are a customer-support answer composer. Answer only from the supplied evidence. "
-            "Do not invent policies, order state, refunds, or actions. If evidence is insufficient, "
-            "say that human support is required. Keep source ids such as [KB-...] in the answer."
+            "Do not invent policies, order state, refunds, or actions. "
+            "If evidence is insufficient, say that human support is required. "
+            "Keep source ids such as [KB-...] in the answer."
         )
         user = f"Question:\n{query}\n\nEvidence:\n{evidence}"
         try:

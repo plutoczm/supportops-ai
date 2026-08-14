@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class Intent(str, Enum):
+class Intent(StrEnum):
     KNOWLEDGE = "knowledge"
     ORDER_STATUS = "order_status"
     REFUND = "refund"
@@ -15,24 +15,24 @@ class Intent(str, Enum):
     UNKNOWN = "unknown"
 
 
-class PolicyAction(str, Enum):
+class PolicyAction(StrEnum):
     ALLOW = "allow"
     REQUIRE_CONFIRMATION = "require_confirmation"
     REQUIRE_HUMAN = "require_human"
 
 
-class PendingActionKind(str, Enum):
+class PendingActionKind(StrEnum):
     REFUND = "refund"
     RETURN_REQUEST = "return_request"
 
 
-class PendingActionStatus(str, Enum):
+class PendingActionStatus(StrEnum):
     PENDING = "pending"
     EXECUTED = "executed"
     CANCELLED = "cancelled"
 
 
-class TicketStatus(str, Enum):
+class TicketStatus(StrEnum):
     OPEN = "open"
     ASSIGNED = "assigned"
     PENDING_CUSTOMER = "pending_customer"
