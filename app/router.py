@@ -40,8 +40,28 @@ class IntentRouter:
     def _route_with_rules(text: str) -> RoutingDecision:
         normalized = text.lower()
         has_order_id = bool(re.search(r"\bord-\d{4,}\b", normalized))
-        question_markers = ("政策", "规则", "条件", "能否", "可以吗", "how", "policy", "eligible")
-        policy_markers = ("政策", "规则", "条件", "policy", "how does", "eligible")
+        question_markers = (
+            "政策",
+            "规则",
+            "条件",
+            "能否",
+            "可以吗",
+            "how",
+            "policy",
+            "eligible",
+        )
+        policy_markers = (
+            "政策",
+            "规则",
+            "条件",
+            "怎么",
+            "如何",
+            "policy",
+            "how does",
+            "how do",
+            "how can",
+            "eligible",
+        )
 
         if any(word in normalized for word in ("投诉", "complaint", "人工客服", "人工处理")):
             return RoutingDecision(
