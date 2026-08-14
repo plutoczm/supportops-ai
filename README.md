@@ -1,19 +1,17 @@
 # SupportOps AI
 
-Production-oriented **AI Customer Operations Platform** for e-commerce/SaaS support. The project focuses on the parts usually missing from agent demos: authenticated identity, grounded retrieval, safe side effects, human escalation, SLA workflows, auditable tool execution, versioned database migrations, and measurable evaluation.
+Production-oriented **AI Customer Operations Platform** for e-commerce/SaaS support. The project focuses on the parts usually missing from agent demos: authenticated identity, grounded retrieval, safe side effects, human escalation, SLA workflows, auditable tool execution, versioned data/schema changes, external-dependency degradation, and measurable evaluation.
 
 ## What it demonstrates
 
-- **AI application boundary**: the LLM may classify intent and compose grounded answers; it is never the authorization layer.
-- **Authenticated customer scope**: HTTP requests derive customer identity from a verified principal rather than trusting `customer_id` in user-controlled payloads.
-- **JWT/OIDC-ready resource-server mode**: issuer, audience, JWKS and a fixed signature algorithm are verified before a principal is created.
-- **MCP v2 identity boundary**: Streamable HTTP can validate bearer tokens and tools derive customer scope from the verified MCP access-token context.
-- **Safe side effects**: refund/return requests create persisted pending actions. Customers must confirm through the application API; high-value refunds are escalated for human review.
-- **Human operations**: tickets have priority, assignee, SLA deadline and a validated status-transition state machine.
-- **Auditability**: routes, business-tool calls, policy decisions, action preparation/execution and ticket transitions write durable trace-linked audit events.
-- **Database evolution**: Alembic owns the production schema path; CI migrates a clean PostgreSQL database and checks ORM metadata for missing migrations.
-- **Hybrid retrieval**: BM25 sparse retrieval + a dense retrieval adapter + weighted RRF + score-aware reranking + an answerability gate. Production can use OpenAI-compatible embeddings with Qdrant dense storage.
-- **Evaluation**: separate deterministic routing/safety and retrieval benchmarks prevent one metric from hiding regressions in another subsystem.
+- **AI application boundary**: an LLM may classify intent and compose grounded answers; it is never the authorization layer.
+- **Authenticated customer scope**: HTTP and MCP business access derive customer identity from verified principals rather than model/user-controlled `customer_id` tool arguments.
+- **Safe side effects**: refund/return requests create persisted pending actions; explicit authenticated confirmation is required before execution, and high-value refunds enter human review.
+- **Human operations**: ticket priority, assignment, SLA deadline and state transitions are validated and audited.
+- **Hybrid retrieval**: BM25 sparse retrieval + dense adapter + weighted RRF + score-aware reranking + answerability gate.
+- **Knowledge lifecycle**: versioned source documents become deterministic chunks with stable lineage and content hashes; Qdrant synchronization only re-embeds changed chunks and removes stale vectors.
+- **Visible degradation**: embedding/Qdrant failures have typed reasons. When configured, dense failure degrades to BM25 without pretending the dense path succeeded; strict mode fails fast.
+- **Evaluation**: routing/safety, deterministic retrieval, stateful business tests and real Qdrant lifecycle integration are separate quality gates.
 
 ## Core workflow
 
@@ -46,20 +44,34 @@ answer/refuse     pending action         ticket/SLA
                    audit events
 ```
 
-## Retrieval architecture
+## Knowledge lifecycle and retrieval
 
-The retrieval layer intentionally has two operating modes.
+Knowledge is no longer a Python hard-coded list. The bundled source file contains active documents with:
+
+```text
+document_id
+version
+title
+text
+source_uri
+```
+
+A deterministic chunker produces stable chunk identities such as:
+
+```text
+KB-REFUND-01:1:0000
+```
+
+Every chunk also has a SHA-256 content hash. Citations expose `document_id`, `document_version`, `chunk_id` and `source_uri`, and knowledge-search audit events retain the retrieved chunk/version lineage.
+
+The current bundled JSON is a **versioned source artifact**, not an admin-facing document-management service. External ingestion, approval/version publication and object-store connectors remain future work.
 
 ### Deterministic local/CI mode
-
-Default configuration:
 
 ```text
 KNOWLEDGE_BACKEND=local
 EMBEDDING_BACKEND=deterministic
 ```
-
-The local path uses:
 
 ```text
 query
@@ -72,37 +84,42 @@ query
                                                   --> citations or abstention
 ```
 
-The hashed vector is a **reproducible CI/local fallback, not a semantic embedding model**. It exists so pull requests can run without downloading a model or calling a paid endpoint.
+The hashed vector is a **reproducible test/local representation, not a semantic embedding model**. It keeps pull-request evaluation deterministic and network-independent.
 
-### Production Qdrant mode
-
-The production adapter replaces only the dense storage/search leg with real embeddings + Qdrant; BM25 remains an application-side sparse baseline and the same fusion/rerank/answerability contract is retained.
+### Production-capable dense path
 
 ```text
 KNOWLEDGE_BACKEND=qdrant
 EMBEDDING_BACKEND=openai
 EMBEDDING_BASE_URL=https://your-embedding-endpoint/v1
 EMBEDDING_MODEL=your-embedding-model
+EMBEDDING_DIMENSION=<provider dimension>
 QDRANT_URL=http://qdrant:6333
+QDRANT_COLLECTION=supportops_knowledge
 ```
 
-Install the optional adapter locally with:
+The Qdrant adapter stores the **dense leg only**; sparse retrieval remains application-side BM25. `qdrant + deterministic` is rejected so the CI-only representation cannot be presented as production semantic retrieval.
 
-```bash
-pip install -e ".[dev,rag]"
+On startup, Qdrant synchronization compares stable `index_id + content_hash` metadata:
+
+- new collection -> embed/upsert all desired chunks;
+- unchanged chunk -> no re-embedding or upsert;
+- changed content -> embed/upsert only the changed chunk;
+- removed source/chunk -> delete the stale remote vector.
+
+The sync result records desired, embedded, upserted, deleted and unchanged chunk counts.
+
+### Failure/degradation contract
+
+External retrieval failures are typed, including embedding timeout/rate-limit/provider/invalid-response and Qdrant index/search failures.
+
+```text
+RETRIEVAL_ALLOW_SPARSE_FALLBACK=true
 ```
 
-The Docker image already installs the `rag` extra. The Compose `rag` profile pins the Qdrant server image independently from the Python client constraint, so client and server release numbers are not assumed to be identical.
+With fallback enabled, a typed dense-backend failure keeps BM25 available and marks the response/audit trail with `retrieval_degraded=true` plus a degradation reason. With fallback disabled, the same startup/search failure propagates and the application fails fast instead of silently changing behavior.
 
-Start the optional vector-store service with:
-
-```bash
-docker compose --profile rag up -d qdrant
-```
-
-Then provide a real embedding endpoint/model and select `KNOWLEDGE_BACKEND=qdrant`. The project deliberately refuses `qdrant + deterministic` configuration so the CI-only hash vector cannot be presented as a production semantic embedding.
-
-The current Qdrant adapter stores **dense vectors only**. Sparse retrieval is BM25 in the application process; this repository does not claim that Qdrant sparse-vector indexing has already been implemented.
+This fallback preserves availability, **not semantic equivalence**. A sparse-only degraded response must not be reported as successful dense retrieval.
 
 ## Customer API example
 
@@ -117,7 +134,7 @@ curl -X POST http://localhost:8000/v1/support/messages \
   -d '{"conversation_id":"CONV-001","message":"我要退款 ORD-1001"}'
 ```
 
-The response contains a `pending_action_id`; no refund has happened yet. Confirm it explicitly:
+A refund response can contain a `pending_action_id`; no refund has happened yet. Confirm it explicitly:
 
 ```bash
 curl -X POST http://localhost:8000/v1/actions/ACT-.../confirm \
@@ -128,44 +145,29 @@ curl -X POST http://localhost:8000/v1/actions/ACT-.../confirm \
   -d '{"confirm":true}'
 ```
 
-The action ID is also the idempotency key, so retries do not create a duplicate business side effect. Sending `{"confirm": false}` cancels the pending action without mutating the order.
+The action ID is also the idempotency key. `{"confirm": false}` cancels the pending action without a business mutation.
 
 ## Human-agent workspace
 
-A principal with `support_agent` or `support_admin` can use:
+A `support_agent` or `support_admin` principal can use:
 
 - `GET /v1/agent/tickets`
 - `POST /v1/agent/tickets/{ticket_id}/assign`
 - `POST /v1/agent/tickets/{ticket_id}/transition`
 - `GET /v1/agent/audit/traces/{trace_id}`
 
-Ticket transitions are validated rather than directly writing a status field. A typical path is `open -> assigned -> pending_customer/resolved -> closed`.
-
-SLA targets in the foundation are deterministic configuration-by-priority:
-
-- urgent: 30 minutes
-- high: 2 hours
-- normal: 8 hours
-- low: 24 hours
+Ticket transitions are validated rather than directly writing status. SLA targets in this foundation are deterministic by priority: urgent 30 minutes, high 2 hours, normal 8 hours, low 24 hours.
 
 ## MCP boundary
 
-The server uses the official MCP Python SDK v2. Its safe tool surface is:
+The official MCP Python SDK v2 server exposes a bounded surface:
 
 - `search_support_knowledge(query)`
 - `get_order(order_id)`
 - `request_refund(order_id, conversation_id)`
 - `get_ticket(ticket_id)`
 
-Tools do **not** accept `customer_id`. In JWT mode, customer scope is derived from the verified access token. There is deliberately no `confirm_refund` tool; final mutation confirmation stays behind the application API.
-
-For an authenticated Streamable HTTP deployment configure `MCP_AUTH_MODE=jwt` and the issuer/resource settings, then run:
-
-```bash
-python -m app.mcp_server
-```
-
-For local in-memory/stdio-style testing, authorization is a process boundary rather than an HTTP bearer-token boundary; `MCP_AUTH_MODE=disabled` uses only the explicitly configured demo customer.
+Tools do **not** accept `customer_id`. In JWT mode, customer scope comes from the verified access token. There is deliberately no refund-confirmation/execution MCP tool; final mutation confirmation remains behind the application API.
 
 ## Run locally
 
@@ -176,27 +178,30 @@ pip install -e ".[dev]"
 uvicorn app.main:app --reload
 ```
 
-Demo orders include `CUST-001 / ORD-1001`, `ORD-1002`, and `CUST-002 / ORD-2001`.
-
-For the PostgreSQL deployment path:
+PostgreSQL deployment path:
 
 ```bash
 docker compose up --build
 ```
 
-The application container runs `alembic upgrade head` before starting the API; production container startup does not rely on ORM `create_all()`.
+Optional Qdrant service:
+
+```bash
+pip install -e ".[dev,rag]"
+docker compose --profile rag up -d qdrant
+```
+
+The Docker image installs the `rag` extra. The Compose profile pins the Qdrant **server** image independently from the Python client version range; server/client versions are separate compatibility surfaces.
 
 ## Authentication modes
 
-### Development
+Development:
 
 ```text
 AUTH_MODE=dev
 ```
 
-Requests must provide an explicit `X-Principal-Id`; customer requests also provide `X-Customer-Id`. These headers are a local-development contract and must not be treated as production authentication.
-
-### JWT/OIDC resource server
+Production resource-server mode:
 
 ```text
 AUTH_MODE=jwt
@@ -206,18 +211,17 @@ AUTH_JWKS_URL=https://idp.example.com/.well-known/jwks.json
 AUTH_ALGORITHM=RS256
 ```
 
-The application validates signature, issuer, audience, expiration/issued-at presence and subject before deriving customer/role claims. The identity provider remains responsible for login and token issuance.
+The application validates JWT signature, issuer, audience, required temporal claims and subject before deriving customer/role claims. The identity provider remains responsible for login and token issuance.
 
 ## Quality gates
 
 ```bash
 ruff check .
-python -m compileall app evals migrations
+python -m compileall app evals migrations tests/integration
 
 docker compose config -q
 docker compose --profile rag config -q
 
-# Against a configured DATABASE_URL, preferably a clean PostgreSQL database:
 alembic upgrade head
 alembic current --check-heads
 alembic check
@@ -225,61 +229,63 @@ alembic check
 pytest --cov=app --cov-report=term-missing --cov-fail-under=75
 python -m evals.run_evals
 python -m evals.run_retrieval_evals
+
+pip install -e ".[rag]"
+RUN_QDRANT_INTEGRATION=1 pytest -q -m integration tests/integration/test_qdrant_integration.py
+
 docker build -t supportops-ai:ci .
 ```
 
-### Latest verified v0.3 code baseline
+### Latest verified v0.4 baseline
 
-The verified Hybrid RAG code run reports:
+The current PR head has a complete green GitHub Actions run:
 
-- Ruff and compile checks: passed
-- default and `rag` Compose configuration: passed
-- PostgreSQL 17 migration contract: passed
-- pytest: **31 passed**
-- application coverage: **81.16%** under a 75% gate
+- Ruff / compile: passed
+- default + `rag` Compose config: passed
+- PostgreSQL 17 Alembic migration contract: passed
+- regular pytest: **37 passed, 1 skipped**
+- application coverage: **80.08%** under a 75% gate
 - routing/safety benchmark: **140 cases**
-- routing accuracy: **1.0**
-- routing macro-F1: **1.0**
-- prompt-injection block recall: **1.0** on the curated attack set
-- PII redaction recall: **1.0** on the curated PII set
-- mutating-action policy accuracy: **1.0**
+- routing accuracy / macro-F1: **1.0 / 1.0**
+- prompt-injection block recall: **1.0**
+- PII redaction recall: **1.0**
+- mutation-policy accuracy: **1.0**
 - unsafe mutation count: **0**
 - retrieval benchmark: **60 cases** — 50 supported + 10 unsupported
-- retrieval Recall@1: **1.0**
-- retrieval Recall@3: **1.0**
-- retrieval MRR@3: **1.0**
+- Recall@1 / Recall@3 / MRR@3: **1.0 / 1.0 / 1.0**
 - grounded-answer citation presence: **1.0**
 - unsupported-query abstention recall: **1.0**
-- Docker image build with the `rag` extra: passed
+- real Qdrant lifecycle integration: **2 passed**
+- Docker image build with `supportops-ai==0.4.0` and the `rag` extra: passed
 
-These are **curated deterministic regression metrics**, not estimates of real-world customer-support accuracy, security effectiveness, semantic-retrieval quality, or LLM quality.
+The Qdrant integration test runs Qdrant v1.18.2 and a local HTTP server that implements the OpenAI-compatible embedding protocol. The HTTP test embedding uses a deterministic 64-dimensional representation so CI can validate provider protocol, indexing and failure behavior without making a semantic-model-quality claim.
 
-The retrieval benchmark was useful before reaching the final baseline. The first hybrid implementation achieved Recall@3 = 1.0 but Recall@1 = 0.92 / MRR@3 = 0.96, exposing a ranking-calibration problem. Rank-only weighted RRF still left the same top-1 errors, so the implementation added a score-aware second-stage reranker plus lightweight bilingual normalization/metadata. The fixed benchmark then passed without weakening the gates.
+The integration test verifies: first-time collection/upsert, zero re-embedding for unchanged chunks, changed-only upsert, stale-vector deletion, dense query, and typed Qdrant outage behavior. Separate unit tests verify startup failure with sparse fallback enabled and fail-fast behavior when fallback is disabled.
+
+These are **curated deterministic regression and integration metrics**, not estimates of real-world support accuracy, security effectiveness, external embedding quality, Qdrant high availability, or production semantic-retrieval quality.
 
 ## Engineering roadmap
 
-Completed in the current v0.3 foundation branch:
+Completed through v0.4:
 
-- guarded refund/return workflow and idempotent confirmation
-- JWT/JWKS principal boundary and customer/agent RBAC
-- MCP bearer-token identity boundary for Streamable HTTP
-- ticket priority/assignment/SLA/state-machine workflow
-- durable tool/policy/ticket audit events with trace IDs and latency metadata
-- Alembic schema migrations and PostgreSQL migration CI
-- 140-case deterministic routing/safety benchmark
-- hybrid retrieval abstraction: BM25 + dense adapter + weighted RRF + score-aware reranking
-- OpenAI-compatible embedding adapter + Qdrant dense-vector adapter
-- evidence threshold / unsupported-query abstention and source-id citation contract
-- 60-case retrieval benchmark with Recall@1/3, MRR@3, citation and abstention gates
+- authenticated customer/MCP boundaries and RBAC
+- guarded refund/return confirmation + idempotency
+- human ticket/SLA workflow and durable trace-linked audit
+- Alembic/PostgreSQL migration CI
+- hybrid BM25+dense retrieval, weighted RRF, score-aware reranking and answerability
+- versioned knowledge sources, stable chunk provenance and content hashes
+- incremental Qdrant dense indexing with stale-vector deletion
+- typed embedding/Qdrant failure reasons and explicit sparse-only degradation
+- 140-case safety benchmark + 60-case retrieval benchmark + real Qdrant lifecycle CI
 
-Next high-value milestones:
+Next high-value work:
 
-1. Production-grade knowledge ingestion: document versioning, chunk provenance, incremental indexing and stale-index handling.
-2. Qdrant integration CI with a deterministic mock embedding endpoint, plus failure/degradation tests for embedding/vector-store outages.
-3. Evaluate a learned/cross-encoder reranker only if it improves the same fixed retrieval benchmark without harming latency/cost.
-4. Redis-backed rate limits, confirmation TTLs and distributed idempotency locks.
-5. OpenTelemetry export plus P95 latency/token/cost SLO reporting.
-6. End-to-end conversation evaluation for tool-selection precision/recall, argument accuracy, task completion, escalation and hallucinated-action rate.
+1. Redis-backed rate limits, confirmation TTLs and distributed idempotency locks.
+2. OpenTelemetry/Prometheus export with retrieval/tool spans and P95 latency/token/cost SLO reporting.
+3. Larger held-out retrieval and end-to-end conversation sets before making semantic/model quality claims.
+4. Claim-level citation precision/faithfulness for multi-document answers.
+5. External knowledge publication/approval connectors and object-store/document ingestion.
+6. Evaluate a learned reranker or planner only if it beats the bounded baseline under the same quality, latency and policy gates.
 
 ## Provenance
 
