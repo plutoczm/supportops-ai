@@ -1,7 +1,8 @@
+from fastapi.testclient import TestClient
+
 from app.config import Settings
 from app.container import build_container
 from app.main import create_app
-from fastapi.testclient import TestClient
 
 CUSTOMER_HEADERS = {
     "X-Principal-Id": "user-1",
