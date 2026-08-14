@@ -1,6 +1,4 @@
 from evals import cases, e2e_cases, retrieval_cases
-
-
 _ALLOWED_TOOLS = {
     "knowledge.search",
     "order.get",
