@@ -163,3 +163,58 @@ def test_qdrant_backend_rejects_ci_only_embedding(tmp_path):
         assert "requires EMBEDDING_BACKEND=openai" in str(exc)
     else:
         raise AssertionError("qdrant backend accepted deterministic CI embedding")
+
+
+def test_qdrant_startup_failure_degrades_to_sparse_when_allowed(monkeypatch, tmp_path):
+    def fail_qdrant_startup(*args, **kwargs):
+        del args, kwargs
+        raise RetrievalBackendError(
+            RetrievalFailureReason.QDRANT_INDEX_ERROR,
+            operation="qdrant.sync",
+            message="simulated startup outage",
+        )
+
+    monkeypatch.setattr("app.container.QdrantDenseRetriever", fail_qdrant_startup)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'supportops.db'}",
+        seed_demo_data=False,
+        knowledge_backend="qdrant",
+        embedding_backend="openai",
+        embedding_base_url="http://embedding.test/v1",
+        embedding_model="mock-embedding",
+        embedding_dimension=64,
+        retrieval_allow_sparse_fallback=True,
+    )
+
+    container = build_container(settings)
+    result = container.knowledge.search_with_status("refund policy")
+    assert result.citations
+    assert result.citations[0].document_id == "KB-REFUND-01"
+    assert result.degraded is True
+    assert result.degradation_reason == "qdrant_index_error"
+
+
+def test_qdrant_startup_failure_fails_fast_when_fallback_disabled(monkeypatch, tmp_path):
+    def fail_qdrant_startup(*args, **kwargs):
+        del args, kwargs
+        raise RetrievalBackendError(
+            RetrievalFailureReason.QDRANT_INDEX_ERROR,
+            operation="qdrant.sync",
+            message="simulated startup outage",
+        )
+
+    monkeypatch.setattr("app.container.QdrantDenseRetriever", fail_qdrant_startup)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'supportops.db'}",
+        seed_demo_data=False,
+        knowledge_backend="qdrant",
+        embedding_backend="openai",
+        embedding_base_url="http://embedding.test/v1",
+        embedding_model="mock-embedding",
+        embedding_dimension=64,
+        retrieval_allow_sparse_fallback=False,
+    )
+
+    with pytest.raises(RetrievalBackendError) as exc_info:
+        build_container(settings)
+    assert exc_info.value.reason is RetrievalFailureReason.QDRANT_INDEX_ERROR
