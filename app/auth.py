@@ -36,11 +36,7 @@ class Principal:
 class AuthService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._jwks_client = (
-            PyJWKClient(settings.auth_jwks_url)
-            if settings.auth_mode == "jwt" and settings.auth_jwks_url
-            else None
-        )
+        self._jwks_client = PyJWKClient(settings.auth_jwks_url) if settings.auth_jwks_url else None
 
     def authenticate(
         self,
@@ -56,7 +52,7 @@ class AuthService:
             return Principal(
                 subject=dev_principal_id,
                 customer_id=dev_customer_id,
-                roles=frozenset(self._parse_roles(dev_roles or "customer")),
+                roles=frozenset(self.parse_roles(dev_roles or "customer")),
             )
 
         if self.settings.auth_mode != "jwt":
@@ -71,7 +67,7 @@ class AuthService:
         return Principal(
             subject=subject,
             customer_id=self._string_or_none(payload.get("customer_id")),
-            roles=frozenset(self._parse_roles(payload.get("roles"))),
+            roles=frozenset(self.parse_roles(payload.get("roles"))),
         )
 
     def decode_jwt(self, token: str) -> dict[str, Any]:
@@ -96,7 +92,7 @@ class AuthService:
         return dict(payload)
 
     @staticmethod
-    def _parse_roles(value: object) -> set[str]:
+    def parse_roles(value: object) -> set[str]:
         if value is None:
             return set()
         if isinstance(value, list):
