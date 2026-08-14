@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import dataclasses
 import json
-from dataclasses import dataclass
-from pathlib import Path
+import pathlib
 
-from app.retrieval import RetrievalDocument
-
-
-DEFAULT_KNOWLEDGE_PATH = Path(__file__).with_name("data") / "knowledge_sources.json"
+import app.retrieval
 
 
-@dataclass(frozen=True, slots=True)
+DEFAULT_KNOWLEDGE_PATH = pathlib.Path(__file__).with_name("data") / "knowledge_sources.json"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class KnowledgeSourceDocument:
     document_id: str
     version: str
@@ -30,12 +30,12 @@ class KnowledgeChunker:
         self.max_chars = max_chars
         self.overlap_chars = overlap_chars
 
-    def chunk(self, source: KnowledgeSourceDocument) -> list[RetrievalDocument]:
+    def chunk(self, source: KnowledgeSourceDocument) -> list[app.retrieval.RetrievalDocument]:
         text = source.text.strip()
         if not text:
             return []
 
-        chunks: list[RetrievalDocument] = []
+        chunks: list[app.retrieval.RetrievalDocument] = []
         start = 0
         chunk_index = 0
         while start < len(text):
@@ -45,7 +45,7 @@ class KnowledgeChunker:
             chunk_text = text[start:end].strip()
             if chunk_text:
                 chunks.append(
-                    RetrievalDocument(
+                    app.retrieval.RetrievalDocument(
                         document_id=source.document_id,
                         title=source.title,
                         text=chunk_text,
@@ -76,8 +76,10 @@ class KnowledgeChunker:
         return boundary + 1 if boundary >= minimum else end
 
 
-def load_knowledge_sources(path: str | Path | None = None) -> list[KnowledgeSourceDocument]:
-    source_path = Path(path) if path is not None else DEFAULT_KNOWLEDGE_PATH
+def load_knowledge_sources(
+    path: str | pathlib.Path | None = None,
+) -> list[KnowledgeSourceDocument]:
+    source_path = pathlib.Path(path) if path is not None else DEFAULT_KNOWLEDGE_PATH
     payload = json.loads(source_path.read_text(encoding="utf-8"))
     if not isinstance(payload, list):
         raise ValueError("knowledge source file must contain a JSON list")
@@ -99,7 +101,7 @@ def build_retrieval_documents(
     sources: list[KnowledgeSourceDocument],
     *,
     chunker: KnowledgeChunker | None = None,
-) -> list[RetrievalDocument]:
+) -> list[app.retrieval.RetrievalDocument]:
     chunker = chunker or KnowledgeChunker()
     documents = [chunk for source in sources for chunk in chunker.chunk(source)]
     index_ids = [document.index_id for document in documents]
@@ -108,7 +110,9 @@ def build_retrieval_documents(
     return documents
 
 
-def load_retrieval_documents(path: str | Path | None = None) -> list[RetrievalDocument]:
+def load_retrieval_documents(
+    path: str | pathlib.Path | None = None,
+) -> list[app.retrieval.RetrievalDocument]:
     return build_retrieval_documents(load_knowledge_sources(path))
 
 
