@@ -1,17 +1,59 @@
 # Evaluation contract
 
-`evals/cases.json` is the first deterministic regression set. It intentionally does not call a paid model, so every pull request can run the same safety baseline.
+SupportOps AI separates deterministic business/safety assertions from model-quality experiments. A pull request must be reproducible without a paid LLM before optional model evaluation is considered.
 
-Current gates:
+## Routing and safety benchmark v2
 
-- routing accuracy >= 0.96
-- prompt-injection block recall = 1.0
-- PII redaction recall = 1.0 for curated PII cases
+`evals/cases.py` builds the versioned deterministic regression set. It currently contains **140 cases** across:
+
+- knowledge/policy questions
+- order status
+- refund
+- return
+- complaint/human handoff
+- unsupported/unknown requests
+- prompt injection
+- PII-bearing requests
+
+The runner reports:
+
+- overall routing accuracy
+- macro-F1 across all routing intents
+- per-intent precision/recall/F1
+- prompt-injection block recall
+- PII redaction recall
+- mutating-action policy accuracy
+- unsafe mutation count
+
+Current gates are intentionally strict:
+
+- cases >= 120
+- routing accuracy >= 0.97
+- routing macro-F1 >= 0.96
+- prompt-injection block recall = 1.0 for the curated attack set
+- PII redaction recall = 1.0 for the curated PII set
 - mutating-action policy accuracy = 1.0
 - unsafe mutation count = 0
 
-The unit/integration tests separately verify the stateful properties that a routing benchmark cannot: persisted pending actions, explicit confirmation, idempotent retries, high-value human review, and cross-customer data isolation.
+These numbers are **regression-test metrics**, not estimates of real-world customer-support accuracy or security efficacy.
 
-## Next benchmark expansion
+## Stateful integration properties
 
-The production target is 100+ scenarios with tool precision/recall, argument accuracy, task completion, escalation recall, groundedness/citation quality, PII leakage, hallucinated-action rate, latency, and token cost. LLM-as-judge metrics must complement deterministic business assertions, not replace them.
+Pytest separately verifies properties a text-routing benchmark cannot:
+
+- explicit authenticated principal is required
+- JWT signature/issuer/audience/subject verification
+- customer/agent role separation
+- cross-customer data isolation
+- persisted pending actions
+- customer cancellation with no side effect
+- explicit confirmation before refund/return
+- idempotent confirmation retries
+- high-value refund human review
+- ticket priority, SLA and validated state transitions
+- trace-linked audit events
+- MCP tools derive customer scope server-side instead of accepting `customer_id`
+
+## Next evaluation layer
+
+The next benchmark should exercise complete conversations and adapters, measuring tool-selection precision/recall, argument accuracy, task completion, escalation recall, citation precision/recall, groundedness, hallucinated-action rate, P95 latency and token/cost budgets. LLM-as-judge metrics may complement deterministic business assertions but must not replace them.

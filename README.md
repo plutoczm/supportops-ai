@@ -1,76 +1,111 @@
 # SupportOps AI
 
-Production-oriented **AI Customer Operations Platform** for e-commerce/SaaS support. The project focuses on the part that is usually missing from agent demos: real business state, safe side effects, human escalation, tool authorization, idempotency, and measurable evaluation.
+Production-oriented **AI Customer Operations Platform** for e-commerce/SaaS support. The project focuses on the parts usually missing from agent demos: authenticated identity, real business state, safe side effects, human escalation, SLA workflows, auditable tool execution, and measurable evaluation.
 
-## Why this project exists
+## What it demonstrates
 
-A useful support agent must do more than answer FAQ. It must safely connect conversation intent to business workflows such as order lookup, refund/return requests, support tickets, and human review without allowing the LLM to become the authorization layer.
-
-## Current foundation
-
-- FastAPI support API with health, message, order, ticket, and action-confirmation endpoints.
-- SQLAlchemy persistence; SQLite by default and PostgreSQL in Docker Compose.
-- Optional OpenAI-compatible model for intent classification and grounded answer composition.
-- Deterministic fallback router so CI and local demos do not depend on paid APIs.
-- Pre-model input guardrails for prompt-injection detection and PII redaction.
-- Customer-scoped order/ticket access to avoid cross-user data leakage.
-- Knowledge evidence retrieval with citations and a strict grounded-answer prompt when an LLM is configured.
-- Refund/return action policy: ordinary mutations require explicit customer confirmation; high-value refunds require human review.
-- Persisted pending actions and idempotent execution receipts.
-- MCP v2 server exposing safe knowledge/order/ticket tools and `request_refund` without exposing a refund-confirmation tool.
-- Offline routing/safety evaluation and GitHub Actions quality gates.
+- **AI application boundary**: the LLM classifies intent and composes grounded answers; it is never the authorization layer.
+- **Authenticated customer scope**: HTTP requests derive customer identity from a verified principal rather than trusting `customer_id` in user-controlled payloads.
+- **JWT/OIDC-ready resource-server mode**: issuer, audience, JWKS and fixed signature algorithm are verified before a principal is created. A strict explicit-header development mode keeps local demos deterministic.
+- **MCP v2 identity boundary**: Streamable HTTP can validate bearer tokens and tools derive the customer from the verified MCP access-token context; customer identity is not a tool argument.
+- **Safe side effects**: refund/return requests create persisted pending actions. The customer must confirm through the application API; high-value refunds are escalated for human review.
+- **Human operations**: tickets have priority, assignee, SLA deadline and a validated status-transition state machine.
+- **Auditability**: routes, business-tool calls, policy decisions, action preparation/execution and ticket transitions write durable trace-linked audit events.
+- **Evaluation**: a deterministic 140-case routing/safety benchmark measures accuracy, macro-F1, prompt-injection blocking, PII redaction and mutation-policy invariants.
 
 ## Core workflow
 
 ```text
-Customer message
-  -> input guardrails
-  -> intent classification
-  -> knowledge / order read / refund / return / complaint
-  -> deterministic action policy
-  -> direct safe response OR pending confirmation OR human ticket
-  -> authenticated confirmation endpoint
-  -> idempotent business side effect
+Authenticated customer
+        |
+        v
+Input Guardrails -----> block injection / redact PII
+        |
+        v
+Intent Router --------> optional LLM + deterministic fallback
+        |
+        v
+Application Orchestrator
+   |          |                 |
+Knowledge   Read tools       Mutating intent
+   |          |                 |
+Evidence   customer scope      Policy
+                                |
+                       +--------+---------+
+                       |                  |
+                  confirmation       human review
+                       |                  |
+                pending action         ticket/SLA
+                       |
+              authenticated confirm
+                       |
+                idempotent execute
+                       |
+                  audit events
 ```
 
-### Example: refund
+## Customer API example
 
-`POST /v1/support/messages`
+Development auth is intentionally explicit. No endpoint accepts `customer_id` in the request body as proof of identity.
 
-```json
-{
-  "conversation_id": "CONV-001",
-  "customer_id": "CUST-001",
-  "message": "我要退款 ORD-1001"
-}
+```bash
+curl -X POST http://localhost:8000/v1/support/messages \
+  -H 'Content-Type: application/json' \
+  -H 'X-Principal-Id: user-1' \
+  -H 'X-Customer-Id: CUST-001' \
+  -H 'X-Roles: customer' \
+  -d '{"conversation_id":"CONV-001","message":"我要退款 ORD-1001"}'
 ```
 
-The response contains a `pending_action_id`; no refund has happened yet. The customer then explicitly confirms through:
+The response contains a `pending_action_id`; no refund has happened yet. Confirm it explicitly:
 
-`POST /v1/actions/{action_id}/confirm`
-
-```json
-{"customer_id": "CUST-001"}
+```bash
+curl -X POST http://localhost:8000/v1/actions/ACT-.../confirm \
+  -H 'Content-Type: application/json' \
+  -H 'X-Principal-Id: user-1' \
+  -H 'X-Customer-Id: CUST-001' \
+  -H 'X-Roles: customer' \
+  -d '{"confirm":true}'
 ```
 
-The action ID becomes the idempotency key, so a retry does not create a second refund request.
+The action ID is also the idempotency key, so retries do not create a duplicate business side effect. Sending `{"confirm": false}` cancels the pending action without mutating the order.
+
+## Human-agent workspace
+
+A principal with `support_agent` or `support_admin` can use:
+
+- `GET /v1/agent/tickets`
+- `POST /v1/agent/tickets/{ticket_id}/assign`
+- `POST /v1/agent/tickets/{ticket_id}/transition`
+- `GET /v1/agent/audit/traces/{trace_id}`
+
+Ticket transitions are validated rather than directly writing a status field. A typical path is `open -> assigned -> pending_customer/resolved -> closed`.
+
+SLA targets in the foundation are deterministic configuration-by-priority:
+
+- urgent: 30 minutes
+- high: 2 hours
+- normal: 8 hours
+- low: 24 hours
 
 ## MCP boundary
 
-The MCP server uses the current official Python SDK v2 and exposes:
+The server uses the official MCP Python SDK v2. Its safe tool surface is:
 
-- `search_support_knowledge`
-- `get_order`
-- `request_refund`
-- `get_ticket`
+- `search_support_knowledge(query)`
+- `get_order(order_id)`
+- `request_refund(order_id, conversation_id)`
+- `get_ticket(ticket_id)`
 
-There is deliberately **no `confirm_refund` MCP tool**. An agent may prepare a high-risk action, but the final confirmation remains behind the application API boundary.
+Notice that tools do **not** accept `customer_id`. In JWT mode, customer scope is derived from the verified access token. There is deliberately no `confirm_refund` tool; final mutation confirmation stays behind the application API.
 
-Run the MCP server with the official CLI, for example:
+For an authenticated Streamable HTTP deployment configure `MCP_AUTH_MODE=jwt` and the issuer/resource settings, then run:
 
 ```bash
-mcp dev app/mcp_server.py
+python -m app.mcp_server
 ```
+
+For local in-memory/stdio-style testing, authorization is a process boundary rather than an HTTP bearer-token boundary; `MCP_AUTH_MODE=disabled` uses only the explicitly configured demo customer.
 
 ## Run locally
 
@@ -81,7 +116,7 @@ pip install -e ".[dev]"
 uvicorn app.main:app --reload
 ```
 
-Demo data includes `CUST-001 / ORD-1001`, `ORD-1002`, and `CUST-002 / ORD-2001`.
+Demo orders include `CUST-001 / ORD-1001`, `ORD-1002`, and `CUST-002 / ORD-2001`.
 
 For PostgreSQL:
 
@@ -89,26 +124,60 @@ For PostgreSQL:
 docker compose up --build
 ```
 
+## Authentication modes
+
+### Development
+
+```text
+AUTH_MODE=dev
+```
+
+Requests must provide an explicit `X-Principal-Id`; customer requests also provide `X-Customer-Id`. These headers are a local-development contract and must not be treated as production authentication.
+
+### JWT/OIDC resource server
+
+```text
+AUTH_MODE=jwt
+AUTH_ISSUER=https://idp.example.com/
+AUTH_AUDIENCE=supportops-api
+AUTH_JWKS_URL=https://idp.example.com/.well-known/jwks.json
+AUTH_ALGORITHM=RS256
+```
+
+The application validates signature, issuer, audience, expiration/issued-at presence and subject before deriving customer/role claims. The identity provider remains responsible for login and token issuance.
+
 ## Quality gates
 
 ```bash
 ruff check .
-pytest
+python -m compileall app evals
+pytest --cov=app --cov-report=term-missing --cov-fail-under=75
 python evals/run_evals.py
+docker build -t supportops-ai:ci .
 ```
 
-The offline suite measures routing accuracy, injection blocking, escalation behavior, and whether mutating actions ever bypass confirmation/human-review policy.
+The benchmark is a curated deterministic regression suite, not a claim of real-world production accuracy. See `docs/EVALUATION.md`.
 
 ## Engineering roadmap
 
-1. Hybrid RAG: Qdrant dense + sparse retrieval, reranking, citation precision/recall.
-2. AuthN/AuthZ: JWT/OIDC identity instead of the demo customer-id contract.
-3. Redis-backed rate limits, action-confirmation TTLs, and distributed idempotency.
-4. Full ticket/SLA/assignment state machine and agent workspace.
-5. Tool audit events + OpenTelemetry traces, token/cost metrics, latency SLOs.
-6. 100+ scenario agent evaluation: tool precision/recall, argument accuracy, groundedness, policy adherence, escalation recall, PII leakage, P95 latency, and token cost.
-7. Optional structured multi-agent planner only after it beats the bounded baseline under the same evaluation set.
+Completed in the current foundation branch:
+
+- guarded refund/return workflow and idempotent confirmation
+- JWT/JWKS principal boundary and customer/agent RBAC
+- MCP bearer-token identity boundary for Streamable HTTP
+- ticket priority/assignment/SLA/state-machine workflow
+- durable tool/policy/ticket audit events with trace IDs and latency metadata
+- 140-case deterministic routing/safety benchmark
+
+Next high-value milestones:
+
+1. Alembic schema migrations and migration CI against PostgreSQL.
+2. Hybrid RAG: Qdrant dense+sparse retrieval, reranking and citation precision/recall evaluation.
+3. Redis-backed rate limits, confirmation TTLs and distributed idempotency locks.
+4. OpenTelemetry export plus P95 latency/token/cost SLO reporting.
+5. Tool-selection/argument evaluation over end-to-end conversations, plus groundedness and citation-quality evaluation.
+6. Optional structured planner only after it beats the bounded baseline under the same business-policy gates.
 
 ## Provenance
 
-This is a new implementation, not a renamed upstream repository. See `docs/UPSTREAM.md` for open-source references and licensing/provenance notes.
+This is a new implementation, not a renamed upstream repository. `docs/UPSTREAM.md` records open-source product/architecture references and licensing notes.
