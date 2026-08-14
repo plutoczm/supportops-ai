@@ -9,6 +9,7 @@ from app.knowledge import KnowledgeService, default_knowledge_documents
 from app.model_gateway import OpenAICompatibleModel
 from app.orchestrator import SupportOrchestrator
 from app.policy import ActionPolicy
+from app.reliability import LocalReliabilityCoordinator, RedisReliabilityCoordinator
 from app.retrieval import (
     BM25Retriever,
     DeterministicHashEmbedding,
@@ -30,6 +31,7 @@ class ServiceContainer:
     settings: Settings
     auth: AuthService
     store: SupportStore
+    reliability: LocalReliabilityCoordinator | RedisReliabilityCoordinator
     tickets: TicketWorkflow
     tools: SupportTools
     knowledge: KnowledgeService
@@ -43,6 +45,19 @@ def build_container(settings: Settings | None = None) -> ServiceContainer:
         store.create_schema()
     if settings.seed_demo_data:
         store.seed_demo_data()
+
+    if settings.reliability_backend == "local":
+        reliability = LocalReliabilityCoordinator()
+    elif settings.reliability_backend == "redis":
+        reliability = RedisReliabilityCoordinator(
+            url=settings.redis_url,
+            socket_timeout_seconds=settings.redis_socket_timeout_seconds,
+            key_prefix=settings.redis_key_prefix,
+        )
+        if settings.reliability_require_startup:
+            reliability.ping()
+    else:
+        raise ValueError("RELIABILITY_BACKEND must be 'local' or 'redis'")
 
     model = None
     if settings.llm_enabled:
@@ -119,11 +134,16 @@ def build_container(settings: Settings | None = None) -> ServiceContainer:
         knowledge=knowledge,
         policy=policy,
         tools=tools,
+        reliability=reliability,
+        action_confirmation_ttl_seconds=settings.action_confirmation_ttl_seconds,
+        action_lock_ttl_seconds=settings.action_lock_ttl_seconds,
+        fail_closed_mutations=settings.reliability_fail_closed_mutations,
     )
     return ServiceContainer(
         settings=settings,
         auth=auth,
         store=store,
+        reliability=reliability,
         tickets=tickets,
         tools=tools,
         knowledge=knowledge,

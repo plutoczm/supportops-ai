@@ -19,6 +19,7 @@ from app.domain import (
     TicketTransitionRequest,
     TicketView,
 )
+from app.reliability import MutationLockBusy, ReliabilityBackendError
 
 
 def get_principal(
@@ -60,27 +61,62 @@ def get_agent_principal(
     return current
 
 
+def _enforce_rate_limit(
+    services: ServiceContainer,
+    *,
+    current: Principal,
+    scope: str,
+    limit: int,
+) -> None:
+    try:
+        decision = services.reliability.check_rate_limit(
+            scope=scope,
+            subject=current.subject,
+            limit=limit,
+            window_seconds=services.settings.rate_limit_window_seconds,
+        )
+    except ReliabilityBackendError as exc:
+        if services.settings.rate_limit_fail_open:
+            return
+        raise HTTPException(status_code=503, detail=exc.reason) from exc
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="rate_limit_exceeded",
+            headers={"Retry-After": str(decision.retry_after_seconds)},
+        )
+
+
 def create_app(container: ServiceContainer | None = None) -> FastAPI:
     services = container or build_container()
     app = FastAPI(
         title="SupportOps AI",
-        version="0.2.0",
+        version="0.5.0",
         description=(
             "AI customer operations with guarded tools, identity, audit, "
-            "and human handoff."
+            "distributed reliability and human handoff."
         ),
     )
     app.state.services = services
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        return {"status": "ok"}
+        return {
+            "status": "ok",
+            "reliability_backend": services.reliability.backend_name,
+        }
 
     @app.post("/v1/support/messages", response_model=SupportResponse)
     def handle_support_message(
         request: SupportRequest,
         current: Annotated[Principal, Depends(get_customer_principal)],
     ) -> SupportResponse:
+        _enforce_rate_limit(
+            services,
+            current=current,
+            scope="support-message",
+            limit=services.settings.support_message_rate_limit,
+        )
         return services.orchestrator.handle(request, current)
 
     @app.post("/v1/actions/{action_id}/confirm", response_model=ConfirmationResponse)
@@ -89,6 +125,12 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
         request: ConfirmationRequest,
         current: Annotated[Principal, Depends(get_customer_principal)],
     ) -> ConfirmationResponse:
+        _enforce_rate_limit(
+            services,
+            current=current,
+            scope="action-confirmation",
+            limit=services.settings.action_confirmation_rate_limit,
+        )
         try:
             return services.orchestrator.resolve_action(
                 action_id,
@@ -97,6 +139,10 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except MutationLockBusy as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ReliabilityBackendError as exc:
+            raise HTTPException(status_code=503, detail=exc.reason) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

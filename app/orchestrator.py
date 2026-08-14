@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.auth import Principal
@@ -9,6 +10,7 @@ from app.domain import (
     Intent,
     PendingActionKind,
     PendingActionStatus,
+    PendingActionView,
     PolicyAction,
     SupportRequest,
     SupportResponse,
@@ -17,6 +19,12 @@ from app.domain import (
 from app.guardrails import InputGuardrails
 from app.knowledge import KnowledgeService
 from app.policy import ActionPolicy
+from app.reliability import (
+    LocalReliabilityCoordinator,
+    MutationLockBusy,
+    RedisReliabilityCoordinator,
+    ReliabilityBackendError,
+)
 from app.router import IntentRouter
 from app.store import SupportStore
 from app.tools import SupportTools
@@ -32,6 +40,10 @@ class SupportOrchestrator:
         knowledge: KnowledgeService,
         policy: ActionPolicy,
         tools: SupportTools,
+        reliability: LocalReliabilityCoordinator | RedisReliabilityCoordinator,
+        action_confirmation_ttl_seconds: int,
+        action_lock_ttl_seconds: int,
+        fail_closed_mutations: bool,
     ) -> None:
         self.store = store
         self.guardrails = guardrails
@@ -39,6 +51,10 @@ class SupportOrchestrator:
         self.knowledge = knowledge
         self.policy = policy
         self.tools = tools
+        self.reliability = reliability
+        self.action_confirmation_ttl_seconds = max(1, action_confirmation_ttl_seconds)
+        self.action_lock_ttl_seconds = max(1, action_lock_ttl_seconds)
+        self.fail_closed_mutations = fail_closed_mutations
 
     def handle(self, request: SupportRequest, principal: Principal) -> SupportResponse:
         trace_id = self._trace_id()
@@ -227,26 +243,22 @@ class SupportOrchestrator:
                 safety_labels=labels,
             )
 
-        pending = self.store.create_pending_action(
+        pending = self._create_pending_action(
             conversation_id=conversation_id,
             customer_id=customer_id,
             kind=PendingActionKind.REFUND,
             payload={"order_id": order_id, "amount": amount},
-        )
-        self.store.record_audit(
             trace_id=trace_id,
             actor_id=actor_id,
-            operation="action.prepare",
-            resource_type="pending_action",
-            resource_id=pending.action_id,
-            outcome="confirmation_required",
-            details={"kind": pending.kind.value},
         )
         return SupportResponse(
             trace_id=trace_id,
             intent=Intent.REFUND,
-            answer=f"订单 {order_id} 预计可退 {amount:.2f}。需要你明确确认后才会提交退款。",
+            answer=(
+                f"订单 {order_id} 预计可退 {amount:.2f}。需要你在有效期内明确确认后才会提交退款。"
+            ),
             pending_action_id=pending.action_id,
+            pending_action_expires_at=pending.expires_at,
             safety_labels=labels,
         )
 
@@ -264,59 +276,130 @@ class SupportOrchestrator:
             raise ValueError("pending_action_not_found")
         if pending.customer_id != customer_id:
             raise PermissionError("pending_action_customer_mismatch")
-        if pending.status in {PendingActionStatus.EXECUTED, PendingActionStatus.CANCELLED}:
+        if pending.status in {
+            PendingActionStatus.EXECUTED,
+            PendingActionStatus.CANCELLED,
+            PendingActionStatus.EXPIRED,
+        }:
+            return self._terminal_response(trace_id, pending)
+
+        token: str | None = None
+        lock_bypassed = False
+        try:
+            try:
+                token = self.reliability.acquire_action_lock(
+                    action_id,
+                    self.action_lock_ttl_seconds,
+                )
+            except ReliabilityBackendError as exc:
+                self.store.record_audit(
+                    trace_id=trace_id,
+                    actor_id=principal.subject,
+                    operation="reliability.action_lock",
+                    resource_type="pending_action",
+                    resource_id=action_id,
+                    outcome="unavailable",
+                    details={"reason": exc.reason, "operation": exc.operation},
+                )
+                if self.fail_closed_mutations:
+                    raise
+                lock_bypassed = True
+
+            if token is None and not lock_bypassed:
+                raise MutationLockBusy("action_resolution_in_progress")
+
+            pending = self.store.get_pending_action(action_id)
+            if pending is None:
+                raise ValueError("pending_action_not_found")
+            if pending.status in {
+                PendingActionStatus.EXECUTED,
+                PendingActionStatus.CANCELLED,
+                PendingActionStatus.EXPIRED,
+            }:
+                return self._terminal_response(trace_id, pending)
+            if pending.expires_at <= datetime.now(UTC):
+                return self._expire_action(trace_id, principal.subject, pending)
+
+            remaining_ttl = max(
+                1,
+                int((pending.expires_at - datetime.now(UTC)).total_seconds()),
+            )
+            try:
+                self.reliability.register_action_ttl(action_id, remaining_ttl)
+            except ReliabilityBackendError as exc:
+                self.store.record_audit(
+                    trace_id=trace_id,
+                    actor_id=principal.subject,
+                    operation="reliability.action_ttl",
+                    resource_type="pending_action",
+                    resource_id=action_id,
+                    outcome="unavailable",
+                    details={"reason": exc.reason, "operation": exc.operation},
+                )
+                if self.fail_closed_mutations:
+                    raise
+
+            if not confirm:
+                self.store.mark_action_cancelled(action_id)
+                self._clear_action_ttl(action_id, trace_id, principal.subject)
+                self.store.record_audit(
+                    trace_id=trace_id,
+                    actor_id=principal.subject,
+                    operation="action.cancel",
+                    resource_type="pending_action",
+                    resource_id=action_id,
+                    outcome="success",
+                    details={"kind": pending.kind.value},
+                )
+                return ConfirmationResponse(
+                    trace_id=trace_id,
+                    action_id=action_id,
+                    status=PendingActionStatus.CANCELLED,
+                    result={"cancelled": True},
+                )
+
+            order_id = str(pending.payload["order_id"])
+            if pending.kind is PendingActionKind.REFUND:
+                result = self.tools.execute_refund(
+                    order_id=order_id,
+                    customer_id=customer_id,
+                    idempotency_key=action_id,
+                    trace_id=trace_id,
+                    actor_id=principal.subject,
+                )
+            elif pending.kind is PendingActionKind.RETURN_REQUEST:
+                result = self.tools.execute_return(
+                    order_id=order_id,
+                    customer_id=customer_id,
+                    idempotency_key=action_id,
+                    trace_id=trace_id,
+                    actor_id=principal.subject,
+                )
+            else:
+                raise ValueError("unsupported_pending_action")
+
+            self.store.mark_action_executed(action_id, result)
+            self._clear_action_ttl(action_id, trace_id, principal.subject)
             return ConfirmationResponse(
                 trace_id=trace_id,
                 action_id=action_id,
-                status=pending.status,
-                result=pending.result or {},
+                status=PendingActionStatus.EXECUTED,
+                result=result,
             )
-
-        if not confirm:
-            self.store.mark_action_cancelled(action_id)
-            self.store.record_audit(
-                trace_id=trace_id,
-                actor_id=principal.subject,
-                operation="action.cancel",
-                resource_type="pending_action",
-                resource_id=action_id,
-                outcome="success",
-                details={"kind": pending.kind.value},
-            )
-            return ConfirmationResponse(
-                trace_id=trace_id,
-                action_id=action_id,
-                status=PendingActionStatus.CANCELLED,
-                result={"cancelled": True},
-            )
-
-        order_id = str(pending.payload["order_id"])
-        if pending.kind is PendingActionKind.REFUND:
-            result = self.tools.execute_refund(
-                order_id=order_id,
-                customer_id=customer_id,
-                idempotency_key=action_id,
-                trace_id=trace_id,
-                actor_id=principal.subject,
-            )
-        elif pending.kind is PendingActionKind.RETURN_REQUEST:
-            result = self.tools.execute_return(
-                order_id=order_id,
-                customer_id=customer_id,
-                idempotency_key=action_id,
-                trace_id=trace_id,
-                actor_id=principal.subject,
-            )
-        else:
-            raise ValueError("unsupported_pending_action")
-
-        self.store.mark_action_executed(action_id, result)
-        return ConfirmationResponse(
-            trace_id=trace_id,
-            action_id=action_id,
-            status=PendingActionStatus.EXECUTED,
-            result=result,
-        )
+        finally:
+            if token is not None:
+                try:
+                    self.reliability.release_action_lock(action_id, token)
+                except ReliabilityBackendError as exc:
+                    self.store.record_audit(
+                        trace_id=trace_id,
+                        actor_id=principal.subject,
+                        operation="reliability.action_lock.release",
+                        resource_type="pending_action",
+                        resource_id=action_id,
+                        outcome="degraded",
+                        details={"reason": exc.reason, "operation": exc.operation},
+                    )
 
     def _order_status(
         self,
@@ -390,12 +473,57 @@ class SupportOrchestrator:
         decision = self.policy.return_request()
         if decision.action is not PolicyAction.REQUIRE_CONFIRMATION:
             raise RuntimeError("return_policy_must_require_confirmation")
-        pending = self.store.create_pending_action(
+        pending = self._create_pending_action(
             conversation_id=conversation_id,
             customer_id=customer_id,
             kind=PendingActionKind.RETURN_REQUEST,
             payload={"order_id": order_id},
+            trace_id=trace_id,
+            actor_id=actor_id,
         )
+        return SupportResponse(
+            trace_id=trace_id,
+            intent=Intent.RETURN_REQUEST,
+            answer=f"订单 {order_id} 可以申请退货，需要你在有效期内明确确认后才会提交。",
+            pending_action_id=pending.action_id,
+            pending_action_expires_at=pending.expires_at,
+            safety_labels=safety_labels,
+        )
+
+    def _create_pending_action(
+        self,
+        *,
+        conversation_id: str,
+        customer_id: str,
+        kind: PendingActionKind,
+        payload: dict[str, object],
+        trace_id: str,
+        actor_id: str,
+    ) -> PendingActionView:
+        pending = self.store.create_pending_action(
+            conversation_id=conversation_id,
+            customer_id=customer_id,
+            kind=kind,
+            payload=dict(payload),
+            ttl_seconds=self.action_confirmation_ttl_seconds,
+        )
+        try:
+            self.reliability.register_action_ttl(
+                pending.action_id,
+                self.action_confirmation_ttl_seconds,
+            )
+            ttl_outcome = "registered"
+        except ReliabilityBackendError as exc:
+            ttl_outcome = "degraded"
+            self.store.record_audit(
+                trace_id=trace_id,
+                actor_id=actor_id,
+                operation="reliability.action_ttl",
+                resource_type="pending_action",
+                resource_id=pending.action_id,
+                outcome="degraded",
+                details={"reason": exc.reason, "operation": exc.operation},
+            )
         self.store.record_audit(
             trace_id=trace_id,
             actor_id=actor_id,
@@ -403,14 +531,59 @@ class SupportOrchestrator:
             resource_type="pending_action",
             resource_id=pending.action_id,
             outcome="confirmation_required",
-            details={"kind": pending.kind.value},
+            details={
+                "kind": pending.kind.value,
+                "expires_at": pending.expires_at.isoformat(),
+                "ttl_backend": ttl_outcome,
+            },
         )
-        return SupportResponse(
+        return pending
+
+    def _expire_action(
+        self,
+        trace_id: str,
+        actor_id: str,
+        pending: PendingActionView,
+    ) -> ConfirmationResponse:
+        self.store.mark_action_expired(pending.action_id)
+        self._clear_action_ttl(pending.action_id, trace_id, actor_id)
+        self.store.record_audit(
             trace_id=trace_id,
-            intent=Intent.RETURN_REQUEST,
-            answer=f"订单 {order_id} 可以申请退货，需要你明确确认后才会提交。",
-            pending_action_id=pending.action_id,
-            safety_labels=safety_labels,
+            actor_id=actor_id,
+            operation="action.expire",
+            resource_type="pending_action",
+            resource_id=pending.action_id,
+            outcome="expired",
+            details={"kind": pending.kind.value, "expires_at": pending.expires_at.isoformat()},
+        )
+        return ConfirmationResponse(
+            trace_id=trace_id,
+            action_id=pending.action_id,
+            status=PendingActionStatus.EXPIRED,
+            result={"expired": True},
+        )
+
+    def _clear_action_ttl(self, action_id: str, trace_id: str, actor_id: str) -> None:
+        try:
+            self.reliability.clear_action_ttl(action_id)
+        except ReliabilityBackendError as exc:
+            self.store.record_audit(
+                trace_id=trace_id,
+                actor_id=actor_id,
+                operation="reliability.action_ttl.clear",
+                resource_type="pending_action",
+                resource_id=action_id,
+                outcome="degraded",
+                details={"reason": exc.reason, "operation": exc.operation},
+            )
+
+    @staticmethod
+    def _terminal_response(trace_id: str, pending: PendingActionView) -> ConfirmationResponse:
+        return ConfirmationResponse(
+            trace_id=trace_id,
+            action_id=pending.action_id,
+            status=pending.status,
+            result=pending.result or {},
         )
 
     @staticmethod
