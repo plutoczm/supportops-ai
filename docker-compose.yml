@@ -3,6 +3,8 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg://supportops:supportops@postgres:5432/supportops
+      DATABASE_AUTO_CREATE_SCHEMA: "false"
+      SEED_DEMO_DATA: "true"
       REFUND_HUMAN_REVIEW_THRESHOLD: "500"
     ports:
       - "8000:8000"

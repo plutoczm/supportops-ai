@@ -29,8 +29,10 @@ class ServiceContainer:
 def build_container(settings: Settings | None = None) -> ServiceContainer:
     settings = settings or Settings.from_env()
     store = SupportStore(settings.database_url)
-    store.create_schema()
-    store.seed_demo_data()
+    if settings.database_auto_create_schema:
+        store.create_schema()
+    if settings.seed_demo_data:
+        store.seed_demo_data()
 
     model = None
     if settings.llm_enabled:

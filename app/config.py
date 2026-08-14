@@ -4,9 +4,18 @@ import os
 from dataclasses import dataclass
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     database_url: str = "sqlite:///./supportops.db"
+    database_auto_create_schema: bool = True
+    seed_demo_data: bool = True
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     llm_model: str | None = None
@@ -28,6 +37,8 @@ class Settings:
     def from_env(cls) -> Settings:
         return cls(
             database_url=os.getenv("DATABASE_URL", "sqlite:///./supportops.db"),
+            database_auto_create_schema=_env_bool("DATABASE_AUTO_CREATE_SCHEMA", True),
+            seed_demo_data=_env_bool("SEED_DEMO_DATA", True),
             llm_base_url=os.getenv("LLM_BASE_URL") or None,
             llm_api_key=os.getenv("LLM_API_KEY") or None,
             llm_model=os.getenv("LLM_MODEL") or None,

@@ -8,6 +8,20 @@ on:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: supportops_ci
+          POSTGRES_USER: supportops
+          POSTGRES_PASSWORD: supportops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U supportops -d supportops_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,7 +33,14 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Compile
-        run: python -m compileall app evals
+        run: python -m compileall app evals migrations
+      - name: PostgreSQL migration contract
+        env:
+          DATABASE_URL: postgresql+psycopg://supportops:supportops@localhost:5432/supportops_ci
+        run: |
+          alembic upgrade head
+          alembic current --check-heads
+          alembic check
       - name: Tests
         run: pytest --cov=app --cov-report=term-missing --cov-fail-under=75
       - name: Offline agent safety eval
