@@ -59,6 +59,8 @@ QDRANT_URL=http://qdrant:6333
 QDRANT_COLLECTION=supportops_knowledge
 ```
 
+The Compose file pins the Qdrant **server** image, while the Python `rag` extra uses a compatible `qdrant-client` version range. Client and server release numbers are separate compatibility surfaces and should not be assumed to match exactly.
+
 The application rejects `KNOWLEDGE_BACKEND=qdrant` with the deterministic embedding backend. This prevents a CI-only representation from silently becoming a production configuration.
 
 ## Why sparse retrieval is still application-side
