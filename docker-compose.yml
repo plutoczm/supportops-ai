@@ -6,6 +6,18 @@ services:
       DATABASE_AUTO_CREATE_SCHEMA: "false"
       SEED_DEMO_DATA: "true"
       REFUND_HUMAN_REVIEW_THRESHOLD: "500"
+      RELIABILITY_BACKEND: ${RELIABILITY_BACKEND:-redis}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_SOCKET_TIMEOUT_SECONDS: ${REDIS_SOCKET_TIMEOUT_SECONDS:-0.5}
+      REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-supportops}
+      RELIABILITY_REQUIRE_STARTUP: ${RELIABILITY_REQUIRE_STARTUP:-true}
+      RELIABILITY_FAIL_CLOSED_MUTATIONS: ${RELIABILITY_FAIL_CLOSED_MUTATIONS:-true}
+      ACTION_CONFIRMATION_TTL_SECONDS: ${ACTION_CONFIRMATION_TTL_SECONDS:-600}
+      ACTION_LOCK_TTL_SECONDS: ${ACTION_LOCK_TTL_SECONDS:-15}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      SUPPORT_MESSAGE_RATE_LIMIT: ${SUPPORT_MESSAGE_RATE_LIMIT:-30}
+      ACTION_CONFIRMATION_RATE_LIMIT: ${ACTION_CONFIRMATION_RATE_LIMIT:-10}
+      RATE_LIMIT_FAIL_OPEN: ${RATE_LIMIT_FAIL_OPEN:-true}
       KNOWLEDGE_BACKEND: ${KNOWLEDGE_BACKEND:-local}
       KNOWLEDGE_SOURCES_PATH: ${KNOWLEDGE_SOURCES_PATH:-}
       EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-deterministic}
@@ -26,6 +38,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
 
   postgres:
     image: postgres:17-alpine
@@ -41,6 +55,17 @@ services:
     volumes:
       - supportops-postgres:/var/lib/postgresql/data
 
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - supportops-redis:/data
+
   qdrant:
     image: qdrant/qdrant:v1.18.2
     profiles: ["rag"]
@@ -52,4 +77,5 @@ services:
 
 volumes:
   supportops-postgres:
+  supportops-redis:
   supportops-qdrant:

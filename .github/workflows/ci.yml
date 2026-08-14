@@ -22,6 +22,15 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
       qdrant:
         image: qdrant/qdrant:v1.18.2
         ports:
@@ -55,6 +64,10 @@ jobs:
         run: python -m evals.run_evals
       - name: Offline retrieval eval
         run: python -m evals.run_retrieval_evals
+      - name: Redis reliability integration
+        env:
+          RUN_REDIS_INTEGRATION: "1"
+        run: pytest -q -m integration tests/integration/test_redis_integration.py
       - name: Install RAG adapter
         run: pip install -e ".[rag]"
       - name: Qdrant lifecycle integration
