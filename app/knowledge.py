@@ -21,9 +21,10 @@ def default_knowledge_documents() -> list[RetrievalDocument]:
         ),
         RetrievalDocument(
             "KB-SHIPPING-01",
-            "物流与配送 Shipping and tracking",
+            "物流与配送 Shipping tracking carrier status",
             "已发货订单可查询物流 tracking 状态和承运商信息。运输中的订单 in transit 不能直接"
-            "发起已签收商品的退货流程；预计送达时间 delivery estimate 以物流更新为准。",
+            "发起已签收商品的退货流程；预计送达时间 delivery estimate 以物流更新为准。"
+            " Shipping status includes carrier information and package tracking.",
         ),
         RetrievalDocument(
             "KB-RETURN-01",
@@ -51,7 +52,7 @@ def default_knowledge_documents() -> list[RetrievalDocument]:
         ),
         RetrievalDocument(
             "KB-WARRANTY-01",
-            "保修与质量问题 Warranty",
+            "保修与质量问题 Warranty coverage",
             "商品 warranty 保修范围取决于品类和厂商条款。质量问题应保留订单、故障描述和必要凭证；"
             "超过普通退货期不代表一定失去保修资格。",
         ),
@@ -63,9 +64,10 @@ def default_knowledge_documents() -> list[RetrievalDocument]:
         ),
         RetrievalDocument(
             "KB-SUBSCRIPTION-01",
-            "订阅取消 Subscription cancellation",
+            "订阅取消 Subscription cancellation and renewal",
             "SaaS subscription 订阅可在符合套餐规则时取消自动续费 cancel renewal。取消续费不会"
-            "自动承诺退款；已经产生的账单是否可退仍按退款和合同规则处理。",
+            "自动承诺退款；已经产生的账单是否可退仍按退款和合同规则处理。"
+            " Cancel auto renewal does not guarantee a refund.",
         ),
         RetrievalDocument(
             "KB-PRIVACY-01",
