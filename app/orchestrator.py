@@ -78,15 +78,24 @@ class SupportOrchestrator:
         )
 
         if route.intent is Intent.KNOWLEDGE:
-            citations = self.knowledge.search(safe_message)
+            search = self.knowledge.search_with_status(safe_message)
+            citations = search.citations
             self.store.record_audit(
                 trace_id=trace_id,
                 actor_id=principal.subject,
                 operation="knowledge.search",
                 resource_type="knowledge",
                 resource_id=None,
-                outcome="success",
-                details={"citation_count": len(citations)},
+                outcome="degraded" if search.degraded else "success",
+                details={
+                    "citation_count": len(citations),
+                    "degraded": search.degraded,
+                    "degradation_reason": search.degradation_reason,
+                    "chunk_ids": [citation.chunk_id for citation in citations],
+                    "document_versions": [
+                        citation.document_version for citation in citations
+                    ],
+                },
             )
             return SupportResponse(
                 trace_id=trace_id,
@@ -94,6 +103,8 @@ class SupportOrchestrator:
                 answer=self.knowledge.answer(safe_message, citations),
                 citations=citations,
                 safety_labels=safety.labels,
+                retrieval_degraded=search.degraded,
+                retrieval_degradation_reason=search.degradation_reason,
             )
         if route.intent is Intent.ORDER_STATUS:
             return self._order_status(
