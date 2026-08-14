@@ -66,8 +66,8 @@ jobs:
         run: python -m evals.run_retrieval_evals
       - name: End-to-end regression v1
         run: python -m evals.run_e2e_regression
-      - name: Fresh end-to-end holdout v2
-        run: python -m evals.run_e2e_holdout_v2
+      - name: End-to-end regression v2
+        run: python -m evals.run_e2e_regression_v2
       - name: Local observability SLO smoke
         run: python -m evals.run_slo_smoke
       - name: Redis reliability integration

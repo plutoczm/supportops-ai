@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from app.domain import KnowledgeCitation
@@ -23,6 +24,12 @@ class KnowledgeSearchResult:
 
 def default_knowledge_documents(path: str | None = None) -> list[RetrievalDocument]:
     return load_retrieval_documents(path)
+
+
+def normalize_retrieval_query(query: str) -> str:
+    """Normalize equivalent support terminology before sparse/dense retrieval."""
+    normalized = re.sub(r"\b(?:sign|log)[\s_-]*in\b", "login", query, flags=re.IGNORECASE)
+    return re.sub(r"(?<=[A-Za-z0-9])[-_](?=[A-Za-z0-9])", " ", normalized)
 
 
 class KnowledgeService:
@@ -55,8 +62,9 @@ class KnowledgeService:
         return self.search_with_status(query, limit=limit).citations
 
     def search_with_status(self, query: str, limit: int = 3) -> KnowledgeSearchResult:
+        retrieval_query = normalize_retrieval_query(query)
         result = self.retriever.search_with_status(
-            query,
+            retrieval_query,
             limit=max(limit, 1),
             prefetch=max(10, limit * 3),
         )

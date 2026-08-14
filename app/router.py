@@ -50,16 +50,12 @@ class IntentRouter:
             "policy",
             "eligible",
         )
-        policy_markers = (
+        explicit_policy_markers = (
             "政策",
             "规则",
             "条件",
-            "怎么",
-            "如何",
             "policy",
             "how does",
-            "how do",
-            "how can",
             "eligible",
         )
 
@@ -91,10 +87,22 @@ class IntentRouter:
             )
 
         order_status_terms = ("订单状态", "物流", "到哪", "order status", "shipping", "tracking")
+        address_terms = ("收货地址", "配送地址", "shipping address", "delivery address")
+        address_change_terms = ("修改", "更改", "改址", "change", "update", "edit")
+        if (
+            not has_order_id
+            and any(word in normalized for word in address_terms)
+            and any(word in normalized for word in address_change_terms)
+        ):
+            return RoutingDecision(
+                intent=Intent.KNOWLEDGE,
+                confidence=0.92,
+                reason="shipping-address policy question without order",
+            )
         if (
             not has_order_id
             and any(word in normalized for word in order_status_terms)
-            and any(word in normalized for word in policy_markers)
+            and any(word in normalized for word in explicit_policy_markers)
         ):
             return RoutingDecision(
                 intent=Intent.KNOWLEDGE,

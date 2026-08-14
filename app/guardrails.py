@@ -12,7 +12,10 @@ class InputGuardrails:
         re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.IGNORECASE),
         re.compile(r"reveal\s+(the\s+)?system\s+prompt", re.IGNORECASE),
         re.compile(r"developer\s+message", re.IGNORECASE),
-        re.compile(r"忽略(之前|以上|前面).{0,8}(指令|规则|要求)"),
+        re.compile(
+            r"(?:忽略|无视|不要遵守)(?:之前|以上|前面|上面)(?:的)?.{0,8}"
+            r"(?:指令|规则|要求|限制)"
+        ),
         re.compile(r"(泄露|输出|显示).{0,8}(系统提示词|system prompt)", re.IGNORECASE),
         re.compile(r"绕过.{0,8}(安全|规则|限制)"),
     )

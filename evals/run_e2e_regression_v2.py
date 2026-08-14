@@ -8,15 +8,15 @@ from evals.e2e_suite import enforce_gates, evaluate_scenarios
 
 
 def main() -> None:
-    prohibited = [*component_benchmark_texts(), *regression_v1_texts()]
+    scenarios = build_e2e_holdout_v2_scenarios()
     metrics = evaluate_scenarios(
-        build_e2e_holdout_v2_scenarios(),
-        benchmark_version="supportops-e2e-holdout-v2",
+        scenarios,
+        benchmark_version="supportops-e2e-regression-v2",
         scope=(
-            "fresh repository-held-out deterministic E2E scenarios created after the "
-            "regression-v1 defect fix; not an external blind production benchmark"
+            "observed v2 E2E set; frozen as regression after its first run exposed "
+            "account-security retrieval and prompt-injection detection defects"
         ),
-        prohibited_texts=prohibited,
+        prohibited_texts=[*component_benchmark_texts(), *regression_v1_texts()],
     )
     print(json.dumps(metrics, indent=2, ensure_ascii=False))
     enforce_gates(metrics)
