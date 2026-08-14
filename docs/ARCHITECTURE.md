@@ -84,6 +84,8 @@ The sparse leg is BM25. Dense and sparse candidate lists are first fused with we
 
 `EMBEDDING_BACKEND=openai` uses an OpenAI-compatible `/embeddings` endpoint. `KNOWLEDGE_BACKEND=qdrant` stores and queries the resulting **dense vectors** in Qdrant. The application still runs BM25 for the sparse leg and applies the same fusion/reranking/answerability contract.
 
+The deployment image includes the optional Qdrant client dependency and the `rag` Compose profile is syntax-validated in CI. This verifies packaging/configuration only; CI does **not yet** claim end-to-end quality or availability of an external embedding provider + Qdrant deployment.
+
 The current implementation does **not** claim Qdrant sparse-vector indexing, document ingestion pipelines, a learned cross-encoder reranker, or production semantic-quality metrics. Those remain separate measurable milestones.
 
 ### Answerability and citations
@@ -138,4 +140,4 @@ CI starts a clean PostgreSQL 17 service and executes `upgrade head`, `current --
 - Fusion/reranking: weighted RRF plus deterministic score-aware reranker
 - Evaluation: 140-case routing/safety benchmark, 60-case retrieval benchmark, and stateful integration tests
 
-Distributed state, production ingestion/versioning and learned rerankers remain separate future milestones so their benefit can be measured rather than added as architecture decoration.
+Distributed state, production ingestion/versioning, external retrieval integration testing and learned rerankers remain separate future milestones so their benefit can be measured rather than added as architecture decoration.
