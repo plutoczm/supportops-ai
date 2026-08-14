@@ -92,7 +92,9 @@ Install the optional adapter locally with:
 pip install -e ".[dev,rag]"
 ```
 
-The Docker image already installs the `rag` extra. An optional Qdrant service is available through the Compose `rag` profile:
+The Docker image already installs the `rag` extra. The Compose `rag` profile pins the Qdrant server image independently from the Python client constraint, so client and server release numbers are not assumed to be identical.
+
+Start the optional vector-store service with:
 
 ```bash
 docker compose --profile rag up -d qdrant
@@ -231,6 +233,7 @@ docker build -t supportops-ai:ci .
 The verified Hybrid RAG code run reports:
 
 - Ruff and compile checks: passed
+- default and `rag` Compose configuration: passed
 - PostgreSQL 17 migration contract: passed
 - pytest: **31 passed**
 - application coverage: **81.16%** under a 75% gate
@@ -247,7 +250,7 @@ The verified Hybrid RAG code run reports:
 - retrieval MRR@3: **1.0**
 - grounded-answer citation presence: **1.0**
 - unsupported-query abstention recall: **1.0**
-- Docker image build: passed
+- Docker image build with the `rag` extra: passed
 
 These are **curated deterministic regression metrics**, not estimates of real-world customer-support accuracy, security effectiveness, semantic-retrieval quality, or LLM quality.
 
