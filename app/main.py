@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 
 from app.auth import AuthenticationError, AuthorizationError, Principal
 from app.container import ServiceContainer, build_container
@@ -21,6 +21,45 @@ from app.domain import (
 )
 
 
+def get_principal(
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+    x_principal_id: Annotated[str | None, Header()] = None,
+    x_customer_id: Annotated[str | None, Header()] = None,
+    x_roles: Annotated[str | None, Header()] = None,
+) -> Principal:
+    services: ServiceContainer = request.app.state.services
+    try:
+        return services.auth.authenticate(
+            authorization=authorization,
+            dev_principal_id=x_principal_id,
+            dev_customer_id=x_customer_id,
+            dev_roles=x_roles,
+        )
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+def get_customer_principal(
+    current: Annotated[Principal, Depends(get_principal)],
+) -> Principal:
+    try:
+        current.require_customer()
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return current
+
+
+def get_agent_principal(
+    current: Annotated[Principal, Depends(get_principal)],
+) -> Principal:
+    try:
+        current.require_agent()
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return current
+
+
 def create_app(container: ServiceContainer | None = None) -> FastAPI:
     services = container or build_container()
     app = FastAPI(
@@ -31,36 +70,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
             "and human handoff."
         ),
     )
-
-    def principal(
-        authorization: Annotated[str | None, Header()] = None,
-        x_principal_id: Annotated[str | None, Header()] = None,
-        x_customer_id: Annotated[str | None, Header()] = None,
-        x_roles: Annotated[str | None, Header()] = None,
-    ) -> Principal:
-        try:
-            return services.auth.authenticate(
-                authorization=authorization,
-                dev_principal_id=x_principal_id,
-                dev_customer_id=x_customer_id,
-                dev_roles=x_roles,
-            )
-        except AuthenticationError as exc:
-            raise HTTPException(status_code=401, detail=str(exc)) from exc
-
-    def customer_principal(current: Annotated[Principal, Depends(principal)]) -> Principal:
-        try:
-            current.require_customer()
-        except AuthorizationError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
-        return current
-
-    def agent_principal(current: Annotated[Principal, Depends(principal)]) -> Principal:
-        try:
-            current.require_agent()
-        except AuthorizationError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
-        return current
+    app.state.services = services
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -69,7 +79,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     @app.post("/v1/support/messages", response_model=SupportResponse)
     def handle_support_message(
         request: SupportRequest,
-        current: Annotated[Principal, Depends(customer_principal)],
+        current: Annotated[Principal, Depends(get_customer_principal)],
     ) -> SupportResponse:
         return services.orchestrator.handle(request, current)
 
@@ -77,7 +87,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     def confirm_action(
         action_id: str,
         request: ConfirmationRequest,
-        current: Annotated[Principal, Depends(customer_principal)],
+        current: Annotated[Principal, Depends(get_customer_principal)],
     ) -> ConfirmationResponse:
         try:
             return services.orchestrator.resolve_action(
@@ -93,7 +103,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     @app.get("/v1/orders/{order_id}", response_model=OrderView)
     def get_order(
         order_id: str,
-        current: Annotated[Principal, Depends(customer_principal)],
+        current: Annotated[Principal, Depends(get_customer_principal)],
     ) -> OrderView:
         customer_id = current.require_customer()
         trace_id = f"TRC-{uuid4().hex[:16]}"
@@ -110,7 +120,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     @app.get("/v1/tickets/{ticket_id}", response_model=TicketView)
     def get_ticket(
         ticket_id: str,
-        current: Annotated[Principal, Depends(customer_principal)],
+        current: Annotated[Principal, Depends(get_customer_principal)],
     ) -> TicketView:
         customer_id = current.require_customer()
         ticket = services.store.get_ticket(ticket_id)
@@ -120,7 +130,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
 
     @app.get("/v1/agent/tickets", response_model=list[TicketView])
     def list_agent_tickets(
-        current: Annotated[Principal, Depends(agent_principal)],
+        current: Annotated[Principal, Depends(get_agent_principal)],
         status: Annotated[TicketStatus | None, Query()] = None,
     ) -> list[TicketView]:
         return services.store.list_tickets(status)
@@ -129,7 +139,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     def assign_ticket(
         ticket_id: str,
         request: TicketAssignRequest,
-        current: Annotated[Principal, Depends(agent_principal)],
+        current: Annotated[Principal, Depends(get_agent_principal)],
     ) -> TicketView:
         try:
             return services.tickets.assign(
@@ -147,7 +157,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     def transition_ticket(
         ticket_id: str,
         request: TicketTransitionRequest,
-        current: Annotated[Principal, Depends(agent_principal)],
+        current: Annotated[Principal, Depends(get_agent_principal)],
     ) -> TicketView:
         try:
             return services.tickets.transition(
@@ -165,7 +175,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     @app.get("/v1/agent/audit/traces/{trace_id}", response_model=list[AuditEventView])
     def get_trace_audit(
         trace_id: str,
-        current: Annotated[Principal, Depends(agent_principal)],
+        current: Annotated[Principal, Depends(get_agent_principal)],
     ) -> list[AuditEventView]:
         return services.store.get_trace_audit(trace_id)
 
