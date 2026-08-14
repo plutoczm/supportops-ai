@@ -2,7 +2,7 @@
 
 ## Trust model
 
-SupportOps AI treats model output, user-provided identifiers and tool arguments as untrusted. Identity and authorization are established before business data is accessed.
+SupportOps AI treats model output, user-provided identifiers and external retrieval/tool adapters as untrusted. Identity, authorization, business policy and mutation confirmation are application concerns rather than model decisions.
 
 ```text
                  Identity Provider
@@ -37,21 +37,38 @@ SupportOps AI treats model output, user-provided identifiers and tool arguments 
 
 ## Identity and authorization
 
-### HTTP API
+Production HTTP mode verifies JWT signature, issuer, audience, required temporal claims and subject before creating a `Principal`. Customer identity is derived from validated claims, not message/action payloads. `support_agent` and `support_admin` roles gate the human workspace.
 
-Production mode verifies a JWT against configured issuer, audience, JWKS and a fixed signature algorithm before creating a `Principal`. Customer identity is taken from the validated claim, not from support-message/action payloads. `support_agent`/`support_admin` roles gate the human-agent workspace.
+MCP Streamable HTTP uses the SDK resource-server hooks. Customer-facing MCP tools do not accept `customer_id`; customer scope comes from the verified access token. The MCP surface intentionally prepares refund requests but does not expose the final confirmation/execution step.
 
-Development mode requires explicit identity headers and is documented as local-only.
+## Knowledge lifecycle
 
-### MCP
+The active knowledge set is stored as versioned source records rather than a Python constant:
 
-Streamable HTTP JWT mode uses the MCP SDK resource-server hooks (`TokenVerifier`, `AuthSettings`, `get_access_token`). Customer-facing MCP tools do not accept `customer_id`; they derive customer scope from the verified access token.
+```text
+Knowledge source
+  document_id
+  version
+  title
+  text
+  source_uri
+        |
+        v
+Deterministic chunker
+        |
+        +--> stable chunk_id: document_id:version:ordinal
+        +--> SHA-256 content_hash
+        +--> source/version lineage
+        |
+        v
+RetrievalDocument
+```
 
-`stdio` and in-memory clients do not have the HTTP bearer-token layer, so local tests use an explicit server-side demo customer configuration. This is a different trust boundary, not a production authentication substitute.
+The current source is a bundled JSON artifact. This gives deterministic version/chunk provenance and reproducible packaging, but it is not yet a multi-user document-management or publication system.
+
+Citations expose `document_id`, `document_version`, `chunk_id` and `source_uri`. Knowledge-search audit events record chunk IDs and document versions so a support answer can be traced to the evidence version used at request time.
 
 ## Hybrid retrieval path
-
-Retrieval is a bounded application subsystem rather than a direct `query -> LLM` shortcut.
 
 ```text
                          +--> BM25 sparse retrieval --------+
@@ -60,55 +77,87 @@ query -> tokenize -------+                                   |
                          |                                   v
                          +--> embedding provider -> dense -> weighted RRF
                                    |                         |
-                       local deterministic                  v
-                           or production              score-aware rerank
-                             embedding                      |
+                       deterministic local                  v
+                         or production                score-aware rerank
+                           embedding                        |
                                    |                         v
-                              local memory              evidence score
-                              or Qdrant                     |
-                                                           v
-                                                   answerability gate
-                                                    /             \
-                                               citations         abstain
-                                                   |
-                                            grounded composer
+                            in-memory/Qdrant             evidence score
+                                                             |
+                                                             v
+                                                     answerability gate
+                                                      /             \
+                                                 citations         abstain
+                                                     |
+                                              grounded composer
 ```
 
-### Local/CI retrieval
+### Local deterministic mode
 
-CI must not depend on paid APIs or a downloaded embedding model. The local dense leg therefore uses a deterministic hashed-vector representation. It is reproducible and useful as a regression signal but is **not a semantic embedding model**.
+CI cannot depend on a paid API or downloaded embedding model. The local dense leg therefore uses a deterministic hashed representation. It is useful for reproducible regression testing but is **not a semantic embedding model**.
 
-The sparse leg is BM25. Dense and sparse candidate lists are first fused with weighted reciprocal-rank fusion. A deterministic second-stage reranker then uses normalized BM25 score, dense score, query/title coverage and the fused rank signal. Ranking is intentionally separate from the evidence score used for answerability.
+### Production-capable dense mode
 
-### Production retrieval
+`EMBEDDING_BACKEND=openai` calls an OpenAI-compatible `/embeddings` endpoint. `KNOWLEDGE_BACKEND=qdrant` stores and queries named dense vectors in Qdrant. BM25 remains application-side sparse retrieval, followed by the same weighted-RRF, deterministic reranker and answerability gate.
 
-`EMBEDDING_BACKEND=openai` uses an OpenAI-compatible `/embeddings` endpoint. `KNOWLEDGE_BACKEND=qdrant` stores and queries the resulting **dense vectors** in Qdrant. The application still runs BM25 for the sparse leg and applies the same fusion/reranking/answerability contract.
+The application rejects Qdrant with the deterministic hash embedding. The current implementation also does not claim Qdrant sparse vectors or a learned cross-encoder reranker.
 
-The deployment image includes the optional Qdrant client dependency and the `rag` Compose profile is syntax-validated in CI. This verifies packaging/configuration only; CI does **not yet** claim end-to-end quality or availability of an external embedding provider + Qdrant deployment.
+## Incremental Qdrant synchronization
 
-The current implementation does **not** claim Qdrant sparse-vector indexing, document ingestion pipelines, a learned cross-encoder reranker, or production semantic-quality metrics. Those remain separate measurable milestones.
+Qdrant payload metadata includes stable index/chunk identity, source lineage and `content_hash`. Startup synchronization compares the desired source state with remote payload metadata:
 
-### Answerability and citations
+```text
+collection missing -> embed all -> create -> upsert all
+collection exists  -> scroll remote metadata
+                   -> unchanged hash: no embedding/upsert
+                   -> changed hash: embed + upsert changed chunk only
+                   -> remote id absent from desired state: delete stale vector
+```
 
-A retrieval result must clear an evidence threshold before the Knowledge service exposes citations. Unsupported queries are expected to return no citation and trigger an insufficient-evidence/human-support response. Deterministic answers retain `[KB-...]` source ids; optional model-generated answers are prompted to retain supplied source ids for factual policy claims.
+`IndexSyncStats` reports desired, embedded, upserted, deleted and unchanged chunk counts. This removes the previous behavior where every process start re-embedded and rewrote the complete knowledge set.
+
+The current sync is a bounded single-process startup synchronization mechanism. It is **not** a distributed indexing coordinator, queue-driven ingestion service or transactional multi-replica publication protocol.
+
+## Retrieval failure/degradation boundary
+
+Embedding and vector-store failures are converted to typed retrieval reasons rather than arbitrary provider exceptions. Current reasons include embedding timeout/rate-limit/provider/invalid-response and Qdrant index/search failures.
+
+With `RETRIEVAL_ALLOW_SPARSE_FALLBACK=true`:
+
+```text
+dense startup/search failure
+          |
+          v
+ typed RetrievalBackendError
+          |
+          +--> dense unavailable
+          +--> BM25 remains available
+          +--> retrieval_degraded=true
+          +--> explicit degradation_reason
+          +--> audit outcome=degraded
+```
+
+With fallback disabled, the same error propagates and startup/search fails fast. The fallback is an availability policy, not a claim that sparse-only retrieval is equivalent to the configured dense system.
+
+## Answerability and citations
+
+Retrieval ranking and answerability are separate decisions. A result must clear the evidence threshold before citations are exposed. Unsupported questions are expected to return no evidence and trigger an insufficient-evidence/human-support response. This invariant also applies during sparse-only degradation; the system does not lower the answerability threshold just because the dense backend failed.
 
 ## Mutation safety invariants
 
-1. Model output never directly authorizes a refund or return.
-2. Customer identity never comes from an LLM-selected tool argument.
-3. Cross-customer order/ticket reads return not-found rather than leaking resource existence.
-4. Refund/return side effects require a persisted pending action plus explicit customer confirmation.
-5. High-value refunds bypass autonomous execution and create a high-priority human-review ticket.
-6. The MCP surface intentionally exposes `request_refund`, not a confirmation/execution tool.
-7. Action IDs are idempotency keys; retrying confirmation cannot duplicate the side effect.
-8. A customer can cancel a pending action without a business mutation.
-9. Prompt-injection detection runs before model and tool execution.
-10. Tool and policy operations emit durable audit records keyed by trace and actor.
-11. Insufficient retrieval evidence must fail closed into abstention rather than inventing a support policy.
+1. Model output never authorizes a refund or return.
+2. Customer identity never comes from an LLM-selected business-tool argument.
+3. Cross-customer order/ticket reads fail without leaking resource existence.
+4. Refund/return side effects require a persisted pending action and authenticated confirmation.
+5. High-value refunds enter human review.
+6. MCP does not expose the final mutation-confirmation step.
+7. Action IDs are idempotency keys.
+8. A customer can cancel a pending action without a mutation.
+9. Prompt-injection detection runs before model/tool execution.
+10. Business-tool, policy and ticket operations emit trace-linked audit records.
+11. Insufficient retrieval evidence fails closed into abstention.
+12. Dense retrieval failure is visible and policy-controlled; it cannot silently masquerade as a successful dense request.
 
 ## Human ticket workflow
-
-Tickets persist priority, assignee, SLA deadline, timestamps and transition history. Application-level validation allows only explicit state transitions; direct arbitrary state updates are not exposed through the API.
 
 ```text
 open -> assigned -> pending_customer -> assigned
@@ -118,26 +167,32 @@ open -> assigned -> pending_customer -> assigned
                            +-------> open (reopen)
 ```
 
-A ticket cannot be resolved before assignment. Closed tickets cannot be reassigned.
+A ticket cannot be resolved before assignment, and closed tickets cannot be reassigned.
 
 ## Database release path
 
-Local tests can opt into SQLAlchemy `create_all()` for isolated temporary databases. The deployment path does not: the application image sets `DATABASE_AUTO_CREATE_SCHEMA=false` and runs `alembic upgrade head` before API startup.
+Production schema evolution is owned by Alembic. CI starts PostgreSQL 17 and runs `upgrade head`, `current --check-heads` and `alembic check`, failing when ORM metadata requires an uncommitted migration.
 
-CI starts a clean PostgreSQL 17 service and executes `upgrade head`, `current --check-heads`, and `alembic check`. This gives the schema an explicit, replayable revision history and fails a pull request when ORM metadata changes without a matching migration.
+## CI adapter contract
+
+The CI job now starts PostgreSQL 17 and a real Qdrant v1.18.2 service. After deterministic unit/eval gates, it installs the optional `rag` dependency and runs Qdrant lifecycle integration through a local HTTP server implementing the OpenAI-compatible embedding protocol.
+
+That integration verifies protocol compatibility and index lifecycle behavior against a real vector-store process. The mock embedding representation is deterministic, so the test does **not** establish external embedding semantic quality or Qdrant high availability.
 
 ## Current adapters
 
 - API: FastAPI
-- Authentication: development principal headers or JWT/JWKS resource-server verification
-- Persistence: SQLAlchemy, SQLite locally, PostgreSQL in Docker Compose
-- Schema evolution: Alembic migrations, validated against PostgreSQL in CI
-- Model: optional OpenAI-compatible chat-completions endpoint
-- Embeddings: deterministic local fallback or OpenAI-compatible embedding endpoint
+- Authentication: development headers or JWT/JWKS resource server
+- Persistence: SQLAlchemy; SQLite local tests; PostgreSQL deployment/CI
+- Schema evolution: Alembic
+- Model: optional OpenAI-compatible chat completions
+- Embeddings: deterministic local representation or OpenAI-compatible endpoint
 - MCP: official Python SDK v2
 - Sparse retrieval: application-side BM25
-- Dense retrieval: in-memory adapter or Qdrant dense-vector adapter
-- Fusion/reranking: weighted RRF plus deterministic score-aware reranker
-- Evaluation: 140-case routing/safety benchmark, 60-case retrieval benchmark, and stateful integration tests
+- Dense retrieval: in-memory or Qdrant named dense vectors
+- Fusion/reranking: weighted RRF + deterministic score-aware reranker
+- Knowledge source: versioned bundled JSON + deterministic chunker
+- Index lifecycle: content-addressed changed-only Qdrant sync + stale deletion
+- Evaluation: 140-case routing/safety, 60-case retrieval, stateful unit tests and real Qdrant lifecycle integration
 
-Distributed state, production ingestion/versioning, external retrieval integration testing and learned rerankers remain separate future milestones so their benefit can be measured rather than added as architecture decoration.
+Redis-backed distributed state, OTel/SLO export, external knowledge publication workflows, larger held-out semantic datasets and learned rerankers remain separate measurable milestones.
