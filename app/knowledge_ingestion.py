@@ -6,7 +6,6 @@ import pathlib
 
 from app import retrieval
 
-
 DEFAULT_KNOWLEDGE_PATH = pathlib.Path(__file__).with_name("data") / "knowledge_sources.json"
 
 
