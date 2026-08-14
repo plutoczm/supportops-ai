@@ -2,6 +2,7 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
+
 from app.auth import Principal
 from app.config import Settings
 from app.container import build_container
@@ -12,7 +13,6 @@ from app.reliability import (
     MutationLockBusy,
     ReliabilityBackendError,
 )
-
 CUSTOMER_HEADERS = {
     "X-Principal-Id": "user-1",
     "X-Customer-Id": "CUST-001",
