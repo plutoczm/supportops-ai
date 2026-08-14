@@ -31,6 +31,7 @@ class PendingActionStatus(StrEnum):
     PENDING = "pending"
     EXECUTED = "executed"
     CANCELLED = "cancelled"
+    EXPIRED = "expired"
 
 
 class TicketStatus(StrEnum):
@@ -109,6 +110,8 @@ class PendingActionView(BaseModel):
     payload: dict[str, Any]
     status: PendingActionStatus
     result: dict[str, Any] | None = None
+    created_at: datetime
+    expires_at: datetime
 
 
 class PolicyDecision(BaseModel):
@@ -122,6 +125,7 @@ class SupportResponse(BaseModel):
     answer: str
     citations: list[KnowledgeCitation] = Field(default_factory=list)
     pending_action_id: str | None = None
+    pending_action_expires_at: datetime | None = None
     ticket_id: str | None = None
     handoff: bool = False
     safety_labels: list[str] = Field(default_factory=list)

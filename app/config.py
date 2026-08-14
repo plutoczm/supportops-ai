@@ -44,6 +44,19 @@ class Settings:
     retrieval_min_evidence_score: float = 0.16
     retrieval_allow_sparse_fallback: bool = True
 
+    reliability_backend: str = "local"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    redis_socket_timeout_seconds: float = 0.5
+    redis_key_prefix: str = "supportops"
+    reliability_require_startup: bool = True
+    reliability_fail_closed_mutations: bool = True
+    action_confirmation_ttl_seconds: int = 600
+    action_lock_ttl_seconds: int = 15
+    rate_limit_window_seconds: int = 60
+    support_message_rate_limit: int = 30
+    action_confirmation_rate_limit: int = 10
+    rate_limit_fail_open: bool = True
+
     auth_mode: str = "dev"
     auth_issuer: str | None = None
     auth_audience: str | None = None
@@ -87,6 +100,26 @@ class Settings:
             retrieval_allow_sparse_fallback=_env_bool(
                 "RETRIEVAL_ALLOW_SPARSE_FALLBACK", True
             ),
+            reliability_backend=os.getenv("RELIABILITY_BACKEND", "local").lower(),
+            redis_url=os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
+            redis_socket_timeout_seconds=float(
+                os.getenv("REDIS_SOCKET_TIMEOUT_SECONDS", "0.5")
+            ),
+            redis_key_prefix=os.getenv("REDIS_KEY_PREFIX", "supportops"),
+            reliability_require_startup=_env_bool("RELIABILITY_REQUIRE_STARTUP", True),
+            reliability_fail_closed_mutations=_env_bool(
+                "RELIABILITY_FAIL_CLOSED_MUTATIONS", True
+            ),
+            action_confirmation_ttl_seconds=int(
+                os.getenv("ACTION_CONFIRMATION_TTL_SECONDS", "600")
+            ),
+            action_lock_ttl_seconds=int(os.getenv("ACTION_LOCK_TTL_SECONDS", "15")),
+            rate_limit_window_seconds=int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")),
+            support_message_rate_limit=int(os.getenv("SUPPORT_MESSAGE_RATE_LIMIT", "30")),
+            action_confirmation_rate_limit=int(
+                os.getenv("ACTION_CONFIRMATION_RATE_LIMIT", "10")
+            ),
+            rate_limit_fail_open=_env_bool("RATE_LIMIT_FAIL_OPEN", True),
             auth_mode=os.getenv("AUTH_MODE", "dev").lower(),
             auth_issuer=os.getenv("AUTH_ISSUER") or None,
             auth_audience=os.getenv("AUTH_AUDIENCE") or None,

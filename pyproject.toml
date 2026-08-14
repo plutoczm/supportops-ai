@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "supportops-ai"
-version = "0.4.0"
+version = "0.5.0"
 description = "Production-oriented AI customer operations platform"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,6 +16,7 @@ dependencies = [
   "psycopg[binary]>=3.2,<4",
   "pydantic>=2.9,<3",
   "pyjwt[crypto]>=2.10,<3",
+  "redis>=5,<8",
   "sqlalchemy>=2.0,<3",
   "uvicorn[standard]>=0.30,<1",
 ]

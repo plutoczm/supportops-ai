@@ -76,6 +76,8 @@ class PendingActionRow(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(32), default=PendingActionStatus.PENDING.value)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class ActionReceiptRow(Base):
@@ -252,8 +254,11 @@ class SupportStore:
         customer_id: str,
         kind: PendingActionKind,
         payload: dict[str, Any],
+        ttl_seconds: int,
     ) -> PendingActionView:
         action_id = f"ACT-{uuid4().hex[:12].upper()}"
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(seconds=max(1, ttl_seconds))
         with self._session.begin() as session:
             session.add(
                 PendingActionRow(
@@ -263,6 +268,8 @@ class SupportStore:
                     kind=kind.value,
                     payload=payload,
                     status=PendingActionStatus.PENDING.value,
+                    created_at=now,
+                    expires_at=expires_at,
                 )
             )
         pending = self.get_pending_action(action_id)
@@ -275,15 +282,23 @@ class SupportStore:
             row = session.get(PendingActionRow, action_id)
             if row is None:
                 return None
-            return PendingActionView(
-                action_id=row.action_id,
-                conversation_id=row.conversation_id,
-                customer_id=row.customer_id,
-                kind=PendingActionKind(row.kind),
-                payload=dict(row.payload),
-                status=PendingActionStatus(row.status),
-                result=dict(row.result) if row.result else None,
-            )
+            return self._to_pending_action(row)
+
+    def expire_pending_actions(self, *, now: datetime | None = None) -> int:
+        current = now or datetime.now(UTC)
+        expired = 0
+        with self._session.begin() as session:
+            rows = session.scalars(
+                select(PendingActionRow).where(
+                    PendingActionRow.status == PendingActionStatus.PENDING.value,
+                    PendingActionRow.expires_at <= current,
+                )
+            ).all()
+            for row in rows:
+                row.status = PendingActionStatus.EXPIRED.value
+                row.result = {"expired": True}
+                expired += 1
+        return expired
 
     def mark_action_executed(self, action_id: str, result: dict[str, Any]) -> None:
         with self._session.begin() as session:
@@ -300,6 +315,15 @@ class SupportStore:
                 raise KeyError(action_id)
             row.status = PendingActionStatus.CANCELLED.value
             row.result = {"cancelled": True}
+
+    def mark_action_expired(self, action_id: str) -> None:
+        with self._session.begin() as session:
+            row = session.get(PendingActionRow, action_id)
+            if row is None:
+                raise KeyError(action_id)
+            if row.status == PendingActionStatus.PENDING.value:
+                row.status = PendingActionStatus.EXPIRED.value
+                row.result = {"expired": True}
 
     def execute_refund(
         self,
@@ -441,6 +465,20 @@ class SupportStore:
             ),
             created_at=created,
             updated_at=updated,
+        )
+
+    @classmethod
+    def _to_pending_action(cls, row: PendingActionRow) -> PendingActionView:
+        return PendingActionView(
+            action_id=row.action_id,
+            conversation_id=row.conversation_id,
+            customer_id=row.customer_id,
+            kind=PendingActionKind(row.kind),
+            payload=dict(row.payload),
+            status=PendingActionStatus(row.status),
+            result=dict(row.result) if row.result else None,
+            created_at=cls._ensure_utc(row.created_at),
+            expires_at=cls._ensure_utc(row.expires_at),
         )
 
     @staticmethod
