@@ -1,6 +1,6 @@
 # SupportOps AI
 
-Production-oriented **AI Customer Operations Platform** for e-commerce/SaaS support. The project focuses on the parts usually missing from agent demos: authenticated identity, real business state, safe side effects, human escalation, SLA workflows, auditable tool execution, and measurable evaluation.
+Production-oriented **AI Customer Operations Platform** for e-commerce/SaaS support. The project focuses on the parts usually missing from agent demos: authenticated identity, real business state, safe side effects, human escalation, SLA workflows, auditable tool execution, versioned database migrations, and measurable evaluation.
 
 ## What it demonstrates
 
@@ -11,6 +11,7 @@ Production-oriented **AI Customer Operations Platform** for e-commerce/SaaS supp
 - **Safe side effects**: refund/return requests create persisted pending actions. The customer must confirm through the application API; high-value refunds are escalated for human review.
 - **Human operations**: tickets have priority, assignee, SLA deadline and a validated status-transition state machine.
 - **Auditability**: routes, business-tool calls, policy decisions, action preparation/execution and ticket transitions write durable trace-linked audit events.
+- **Database evolution**: Alembic owns the production schema path; CI migrates a clean PostgreSQL database and checks ORM metadata for missing migrations.
 - **Evaluation**: a deterministic 140-case routing/safety benchmark measures accuracy, macro-F1, prompt-injection blocking, PII redaction and mutation-policy invariants.
 
 ## Core workflow
@@ -118,11 +119,13 @@ uvicorn app.main:app --reload
 
 Demo orders include `CUST-001 / ORD-1001`, `ORD-1002`, and `CUST-002 / ORD-2001`.
 
-For PostgreSQL:
+For the PostgreSQL deployment path:
 
 ```bash
 docker compose up --build
 ```
+
+The application container runs `alembic upgrade head` before starting the API; production container startup does not rely on ORM `create_all()`.
 
 ## Authentication modes
 
@@ -150,13 +153,39 @@ The application validates signature, issuer, audience, expiration/issued-at pres
 
 ```bash
 ruff check .
-python -m compileall app evals
+python -m compileall app evals migrations
+
+# Against a configured DATABASE_URL, preferably a clean PostgreSQL database:
+alembic upgrade head
+alembic current --check-heads
+alembic check
+
 pytest --cov=app --cov-report=term-missing --cov-fail-under=75
-python evals/run_evals.py
+python -m evals.run_evals
 docker build -t supportops-ai:ci .
 ```
 
-The benchmark is a curated deterministic regression suite, not a claim of real-world production accuracy. See `docs/EVALUATION.md`.
+### Latest verified CI baseline
+
+GitHub Actions on the current foundation branch verifies:
+
+- Ruff and compile checks: passed
+- PostgreSQL 17 migration contract: `upgrade head`, `current --check-heads`, and `alembic check` passed
+- pytest: **26 passed**
+- application coverage: **82.55%**
+- deterministic benchmark: **140 cases**
+- routing accuracy: **1.0**
+- routing macro-F1: **1.0**
+- per-intent precision/recall/F1: **1.0** for all six routing intents
+- prompt-injection block recall: **1.0** on the curated attack set
+- PII redaction recall: **1.0** on the curated PII set
+- mutating-action policy accuracy: **1.0**
+- unsafe mutation count: **0**
+- Docker image build: passed
+
+These are **curated deterministic regression metrics**, not estimates of real-world customer-support accuracy, security effectiveness, or model quality.
+
+The expanded benchmark initially exposed a real false positive: `how does shipping policy work?` was misrouted as order tracking because of the word `shipping`. The router was corrected to distinguish policy questions without an order ID from order-status requests, and a dedicated regression test now protects that boundary.
 
 ## Engineering roadmap
 
@@ -167,16 +196,16 @@ Completed in the current foundation branch:
 - MCP bearer-token identity boundary for Streamable HTTP
 - ticket priority/assignment/SLA/state-machine workflow
 - durable tool/policy/ticket audit events with trace IDs and latency metadata
-- 140-case deterministic routing/safety benchmark
+- Alembic schema migrations and PostgreSQL migration CI
+- 140-case deterministic routing/safety benchmark with per-intent PR/F1
 
 Next high-value milestones:
 
-1. Alembic schema migrations and migration CI against PostgreSQL.
-2. Hybrid RAG: Qdrant dense+sparse retrieval, reranking and citation precision/recall evaluation.
-3. Redis-backed rate limits, confirmation TTLs and distributed idempotency locks.
-4. OpenTelemetry export plus P95 latency/token/cost SLO reporting.
-5. Tool-selection/argument evaluation over end-to-end conversations, plus groundedness and citation-quality evaluation.
-6. Optional structured planner only after it beats the bounded baseline under the same business-policy gates.
+1. Hybrid RAG: Qdrant dense+sparse retrieval, reranking and citation precision/recall evaluation.
+2. Redis-backed rate limits, confirmation TTLs and distributed idempotency locks.
+3. OpenTelemetry export plus P95 latency/token/cost SLO reporting.
+4. Tool-selection/argument evaluation over end-to-end conversations, plus groundedness and citation-quality evaluation.
+5. Optional structured planner only after it beats the bounded baseline under the same business-policy gates.
 
 ## Provenance
 
