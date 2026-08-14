@@ -10,10 +10,6 @@ from uuid import uuid4
 import httpx
 import pytest
 
-pytest.importorskip("qdrant_client")
-if os.getenv("RUN_QDRANT_INTEGRATION") != "1":
-    pytest.skip("set RUN_QDRANT_INTEGRATION=1 to run Qdrant integration tests", allow_module_level=True)
-
 from app.knowledge_ingestion import KnowledgeSourceDocument, build_retrieval_documents
 from app.retrieval import (
     DeterministicHashEmbedding,
@@ -22,6 +18,10 @@ from app.retrieval import (
     RetrievalBackendError,
     RetrievalFailureReason,
 )
+
+pytest.importorskip("qdrant_client")
+if os.getenv("RUN_QDRANT_INTEGRATION") != "1":
+    pytest.skip("set RUN_QDRANT_INTEGRATION=1 to run Qdrant integration tests", allow_module_level=True)
 
 pytestmark = pytest.mark.integration
 
