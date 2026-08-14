@@ -29,15 +29,20 @@ class Settings:
     refund_human_review_threshold: float = 500.0
 
     knowledge_backend: str = "local"
+    knowledge_sources_path: str | None = None
     embedding_backend: str = "deterministic"
     embedding_base_url: str | None = None
     embedding_api_key: str | None = None
     embedding_model: str | None = None
     embedding_dimension: int | None = None
+    embedding_timeout_seconds: float = 5.0
     qdrant_url: str = "http://127.0.0.1:6333"
     qdrant_api_key: str | None = None
     qdrant_collection: str = "supportops_knowledge"
+    qdrant_timeout_seconds: float = 3.0
+    qdrant_sync_on_start: bool = True
     retrieval_min_evidence_score: float = 0.16
+    retrieval_allow_sparse_fallback: bool = True
 
     auth_mode: str = "dev"
     auth_issuer: str | None = None
@@ -64,16 +69,23 @@ class Settings:
                 os.getenv("REFUND_HUMAN_REVIEW_THRESHOLD", "500")
             ),
             knowledge_backend=os.getenv("KNOWLEDGE_BACKEND", "local").lower(),
+            knowledge_sources_path=os.getenv("KNOWLEDGE_SOURCES_PATH") or None,
             embedding_backend=os.getenv("EMBEDDING_BACKEND", "deterministic").lower(),
             embedding_base_url=os.getenv("EMBEDDING_BASE_URL") or None,
             embedding_api_key=os.getenv("EMBEDDING_API_KEY") or None,
             embedding_model=os.getenv("EMBEDDING_MODEL") or None,
             embedding_dimension=_env_optional_int("EMBEDDING_DIMENSION"),
+            embedding_timeout_seconds=float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "5")),
             qdrant_url=os.getenv("QDRANT_URL", "http://127.0.0.1:6333"),
             qdrant_api_key=os.getenv("QDRANT_API_KEY") or None,
             qdrant_collection=os.getenv("QDRANT_COLLECTION", "supportops_knowledge"),
+            qdrant_timeout_seconds=float(os.getenv("QDRANT_TIMEOUT_SECONDS", "3")),
+            qdrant_sync_on_start=_env_bool("QDRANT_SYNC_ON_START", True),
             retrieval_min_evidence_score=float(
                 os.getenv("RETRIEVAL_MIN_EVIDENCE_SCORE", "0.16")
+            ),
+            retrieval_allow_sparse_fallback=_env_bool(
+                "RETRIEVAL_ALLOW_SPARSE_FALLBACK", True
             ),
             auth_mode=os.getenv("AUTH_MODE", "dev").lower(),
             auth_issuer=os.getenv("AUTH_ISSUER") or None,
