@@ -45,5 +45,7 @@ jobs:
         run: pytest --cov=app --cov-report=term-missing --cov-fail-under=75
       - name: Offline agent safety eval
         run: python -m evals.run_evals
+      - name: Offline retrieval eval
+        run: python -m evals.run_retrieval_evals
       - name: Container build
         run: docker build -t supportops-ai:ci .
