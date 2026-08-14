@@ -26,6 +26,7 @@ class RetrievalDocument:
 class RetrievalHit:
     document: RetrievalDocument
     fused_score: float
+    rerank_score: float
     dense_score: float
     sparse_score: float
     evidence_score: float
@@ -69,7 +70,7 @@ _STOPWORDS = {
 def tokenize(text: str) -> list[str]:
     normalized = text.lower()
     english = [
-        token
+        _canonicalize_english(token)
         for token in re.findall(r"[a-z0-9_-]+", normalized)
         if len(token) > 1 and token not in _STOPWORDS
     ]
@@ -82,6 +83,17 @@ def tokenize(text: str) -> list[str]:
         if len(segment) <= 8:
             chinese_tokens.append(segment)
     return english + chinese_tokens
+
+
+def _canonicalize_english(token: str) -> str:
+    """Normalize common inflections without adding a heavyweight NLP runtime."""
+    for suffix in ("ations", "ation", "ments", "ment", "ingly", "edly", "ing", "ed", "es", "s"):
+        if token.endswith(suffix) and len(token) - len(suffix) >= 4:
+            base = token[: -len(suffix)]
+            if len(base) >= 2 and base[-1] == base[-2]:
+                base = base[:-1]
+            return base
+    return token
 
 
 class DeterministicHashEmbedding:
@@ -305,30 +317,46 @@ class HybridRetriever:
         sparse_score = {document.document_id: score for document, score in sparse}
 
         candidates = set(dense_rank) | set(sparse_rank)
-        hits: list[RetrievalHit] = []
         query_tokens = set(tokenize(query))
         by_id = {document.document_id: document for document in self.documents}
+        fused_scores: dict[str, float] = {}
         for document_id in candidates:
-            document = by_id[document_id]
             fused = 0.0
             if document_id in dense_rank:
                 fused += self.dense_weight / (self.rrf_k + dense_rank[document_id])
             if document_id in sparse_rank:
                 fused += self.sparse_weight / (self.rrf_k + sparse_rank[document_id])
+            fused_scores[document_id] = fused
 
+        max_dense = max(dense_score.values(), default=1.0) or 1.0
+        max_sparse = max(sparse_score.values(), default=1.0) or 1.0
+        max_fused = max(fused_scores.values(), default=1.0) or 1.0
+        hits: list[RetrievalHit] = []
+        for document_id in candidates:
+            document = by_id[document_id]
             sparse_raw = sparse_score.get(document_id, 0.0)
             dense_raw = dense_score.get(document_id, 0.0)
+            fused = fused_scores[document_id]
             document_tokens = set(tokenize(document.searchable_text))
+            title_tokens = set(tokenize(document.title))
             coverage = len(query_tokens & document_tokens) / max(len(query_tokens), 1)
+            title_coverage = len(query_tokens & title_tokens) / max(len(query_tokens), 1)
             sparse_normalized = sparse_raw / (1.0 + sparse_raw)
             evidence = min(
                 1.0,
                 0.45 * dense_raw + 0.35 * sparse_normalized + 0.20 * coverage,
             )
+            rerank = (
+                0.45 * sparse_raw / max_sparse
+                + 0.25 * dense_raw / max_dense
+                + 0.20 * title_coverage
+                + 0.10 * fused / max_fused
+            )
             hits.append(
                 RetrievalHit(
                     document=document,
                     fused_score=round(fused, 6),
+                    rerank_score=round(rerank, 6),
                     dense_score=round(dense_raw, 6),
                     sparse_score=round(sparse_raw, 6),
                     evidence_score=round(evidence, 6),
@@ -337,7 +365,7 @@ class HybridRetriever:
 
         return sorted(
             hits,
-            key=lambda item: (item.fused_score, item.evidence_score),
+            key=lambda item: (item.rerank_score, item.evidence_score),
             reverse=True,
         )[:limit]
 
