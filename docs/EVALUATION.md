@@ -68,7 +68,7 @@ Current verified code baseline:
 
 The first hybrid implementation did **not** pass these numbers: Recall@1 was **0.92**, Recall@3 was **1.0**, and MRR@3 was **0.96**. That pattern showed that candidate recall was sufficient but top-rank calibration was weak. Rank-only weighted RRF did not resolve the same errors, so the implementation added a score-aware reranker using normalized BM25 score, dense score, title coverage and the fused rank signal. The benchmark then passed without changing the acceptance gates.
 
-This benchmark uses the deterministic local retrieval path. It validates ranking/abstention contracts and regression behavior; it is **not proof of real-world semantic-retrieval quality for an external embedding model or Qdrant deployment**. Production embedding/vector-store changes should be evaluated against the same labeled queries plus a larger held-out corpus.
+This benchmark uses the deterministic local retrieval path. It validates ranking/abstention contracts and regression behavior; it is **not proof of real-world semantic-retrieval quality for an external embedding model or Qdrant deployment**. The current CI validates Qdrant-related packaging and Compose configuration, but does not yet run an end-to-end external embedding + Qdrant retrieval benchmark. Production embedding/vector-store changes should be evaluated against the same labeled queries plus a larger held-out corpus.
 
 ## Stateful integration properties
 
@@ -103,7 +103,7 @@ alembic current --check-heads
 alembic check
 ```
 
-It also validates both default and `rag` Docker Compose configurations, then builds the application image.
+It also validates both default and `rag` Docker Compose configurations, then builds the application image with the optional `rag` dependency set.
 
 ## Next evaluation layer
 
