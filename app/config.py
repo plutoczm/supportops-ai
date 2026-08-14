@@ -57,6 +57,12 @@ class Settings:
     action_confirmation_rate_limit: int = 10
     rate_limit_fail_open: bool = True
 
+    metrics_enabled: bool = True
+    tracing_enabled: bool = True
+    otel_service_name: str = "supportops-ai"
+    otel_exporter_otlp_endpoint: str | None = None
+    otel_export_timeout_seconds: float = 3.0
+
     auth_mode: str = "dev"
     auth_issuer: str | None = None
     auth_audience: str | None = None
@@ -120,6 +126,13 @@ class Settings:
                 os.getenv("ACTION_CONFIRMATION_RATE_LIMIT", "10")
             ),
             rate_limit_fail_open=_env_bool("RATE_LIMIT_FAIL_OPEN", True),
+            metrics_enabled=_env_bool("METRICS_ENABLED", True),
+            tracing_enabled=_env_bool("TRACING_ENABLED", True),
+            otel_service_name=os.getenv("OTEL_SERVICE_NAME", "supportops-ai"),
+            otel_exporter_otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or None,
+            otel_export_timeout_seconds=float(
+                os.getenv("OTEL_EXPORT_TIMEOUT_SECONDS", "3")
+            ),
             auth_mode=os.getenv("AUTH_MODE", "dev").lower(),
             auth_issuer=os.getenv("AUTH_ISSUER") or None,
             auth_audience=os.getenv("AUTH_AUDIENCE") or None,

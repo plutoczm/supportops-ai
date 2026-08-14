@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 
 from app.auth import AuthenticationError, AuthorizationError, Principal
 from app.container import ServiceContainer, build_container
@@ -91,20 +92,67 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     services = container or build_container()
     app = FastAPI(
         title="SupportOps AI",
-        version="0.5.0",
+        version="0.6.0",
         description=(
-            "AI customer operations with guarded tools, identity, audit, "
-            "distributed reliability and human handoff."
+            "AI customer operations with guarded tools, identity, audit, distributed "
+            "reliability, observability and human handoff."
         ),
     )
     app.state.services = services
+    app.add_event_handler("shutdown", services.observability.shutdown)
+
+    @app.middleware("http")
+    async def observe_request(request: Request, call_next):
+        started = perf_counter()
+        status_code = 500
+        route = "unmatched"
+        parent_context = services.observability.extract_context(request.headers)
+        try:
+            with services.observability.operation(
+                "http.server.request",
+                component="http",
+                backend="fastapi",
+                context=parent_context,
+            ) as observation:
+                observation.set_attribute("http.request.method", request.method)
+                response = await call_next(request)
+                status_code = response.status_code
+                route_object = request.scope.get("route")
+                route = str(getattr(route_object, "path", "unmatched"))
+                observation.set_attribute("http.route", route)
+                observation.set_attribute("http.response.status_code", status_code)
+                if status_code >= 500:
+                    observation.set_outcome("server_error")
+                elif status_code >= 400:
+                    observation.set_outcome("client_error")
+                return response
+        finally:
+            route_object = request.scope.get("route")
+            route = str(getattr(route_object, "path", route))
+            services.observability.record_http(
+                method=request.method,
+                route=route,
+                status_code=status_code,
+                duration_seconds=perf_counter() - started,
+            )
 
     @app.get("/health")
     def health() -> dict[str, str]:
         return {
             "status": "ok",
             "reliability_backend": services.reliability.backend_name,
+            "metrics": "enabled" if services.settings.metrics_enabled else "disabled",
+            "tracing": "enabled" if services.settings.tracing_enabled else "disabled",
         }
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics() -> Response:
+        if not services.settings.metrics_enabled:
+            raise HTTPException(status_code=404, detail="metrics_disabled")
+        return Response(
+            content=services.observability.render_metrics(),
+            media_type=services.observability.metrics_content_type,
+        )
 
     @app.post("/v1/support/messages", response_model=SupportResponse)
     def handle_support_message(
