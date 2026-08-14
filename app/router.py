@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.domain import Intent, RoutingDecision
 from app.model_gateway import ModelGatewayError, OpenAICompatibleModel
 
@@ -37,11 +39,30 @@ class IntentRouter:
     @staticmethod
     def _route_with_rules(text: str) -> RoutingDecision:
         normalized = text.lower()
+        has_order_id = bool(re.search(r"\bord-\d{4,}\b", normalized))
+        question_markers = ("政策", "规则", "条件", "能否", "可以吗", "how", "policy", "eligible")
+
         if any(word in normalized for word in ("投诉", "complaint", "人工客服", "人工处理")):
-            return RoutingDecision(intent=Intent.COMPLAINT, confidence=0.96, reason="complaint keyword")
+            return RoutingDecision(
+                intent=Intent.COMPLAINT,
+                confidence=0.96,
+                reason="complaint keyword",
+            )
         if any(word in normalized for word in ("退款", "refund", "退钱")):
+            if not has_order_id and any(word in normalized for word in question_markers):
+                return RoutingDecision(
+                    intent=Intent.KNOWLEDGE,
+                    confidence=0.9,
+                    reason="refund policy question without order",
+                )
             return RoutingDecision(intent=Intent.REFUND, confidence=0.95, reason="refund keyword")
         if any(word in normalized for word in ("退货", "return item", "return this")):
+            if not has_order_id and any(word in normalized for word in question_markers):
+                return RoutingDecision(
+                    intent=Intent.KNOWLEDGE,
+                    confidence=0.9,
+                    reason="return policy question without order",
+                )
             return RoutingDecision(
                 intent=Intent.RETURN_REQUEST,
                 confidence=0.95,
@@ -60,5 +81,9 @@ class IntentRouter:
             word in normalized
             for word in ("政策", "规则", "怎么", "如何", "能否", "coupon", "policy", "how")
         ):
-            return RoutingDecision(intent=Intent.KNOWLEDGE, confidence=0.82, reason="knowledge keyword")
+            return RoutingDecision(
+                intent=Intent.KNOWLEDGE,
+                confidence=0.82,
+                reason="knowledge keyword",
+            )
         return RoutingDecision(intent=Intent.UNKNOWN, confidence=0.5, reason="no known intent")

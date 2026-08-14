@@ -49,20 +49,27 @@ class SupportOrchestrator:
                 safety_labels=safety.labels,
             )
 
-        route = self.router.route(safety.sanitized_text)
+        safe_message = safety.sanitized_text
+        route = self.router.route(safe_message)
         if route.intent is Intent.KNOWLEDGE:
-            citations = self.knowledge.search(safety.sanitized_text)
+            citations = self.knowledge.search(safe_message)
             return SupportResponse(
                 trace_id=trace_id,
                 intent=route.intent,
-                answer=self.knowledge.answer(safety.sanitized_text, citations),
+                answer=self.knowledge.answer(safe_message, citations),
                 citations=citations,
                 safety_labels=safety.labels,
             )
         if route.intent is Intent.ORDER_STATUS:
-            return self._order_status(request, route.intent, trace_id, safety.labels)
+            return self._order_status(
+                customer_id=request.customer_id,
+                message=safe_message,
+                intent=route.intent,
+                trace_id=trace_id,
+                safety_labels=safety.labels,
+            )
         if route.intent is Intent.REFUND:
-            order_id = self._extract_order_id(safety.sanitized_text)
+            order_id = self._extract_order_id(safe_message)
             if order_id is None:
                 return self._missing_order_id(route.intent, trace_id, safety.labels)
             return self.prepare_refund(
@@ -73,12 +80,18 @@ class SupportOrchestrator:
                 safety_labels=safety.labels,
             )
         if route.intent is Intent.RETURN_REQUEST:
-            return self._prepare_return(request, trace_id, safety.labels)
+            return self._prepare_return(
+                customer_id=request.customer_id,
+                conversation_id=request.conversation_id,
+                message=safe_message,
+                trace_id=trace_id,
+                safety_labels=safety.labels,
+            )
         if route.intent is Intent.COMPLAINT:
             ticket = self.tools.create_ticket(
                 customer_id=request.customer_id,
                 conversation_id=request.conversation_id,
-                reason=request.message,
+                reason=safe_message,
             )
             return SupportResponse(
                 trace_id=trace_id,
@@ -92,7 +105,7 @@ class SupportOrchestrator:
         ticket = self.tools.create_ticket(
             customer_id=request.customer_id,
             conversation_id=request.conversation_id,
-            reason=f"unresolved_request: {request.message}",
+            reason=f"unresolved_request: {safe_message}",
         )
         return SupportResponse(
             trace_id=trace_id,
@@ -196,15 +209,17 @@ class SupportOrchestrator:
 
     def _order_status(
         self,
-        request: SupportRequest,
+        *,
+        customer_id: str,
+        message: str,
         intent: Intent,
         trace_id: str,
         safety_labels: list[str],
     ) -> SupportResponse:
-        order_id = self._extract_order_id(request.message)
+        order_id = self._extract_order_id(message)
         if order_id is None:
             return self._missing_order_id(intent, trace_id, safety_labels)
-        order = self.tools.get_order(order_id=order_id, customer_id=request.customer_id)
+        order = self.tools.get_order(order_id=order_id, customer_id=customer_id)
         if order is None:
             return SupportResponse(
                 trace_id=trace_id,
@@ -221,14 +236,17 @@ class SupportOrchestrator:
 
     def _prepare_return(
         self,
-        request: SupportRequest,
+        *,
+        customer_id: str,
+        conversation_id: str,
+        message: str,
         trace_id: str,
         safety_labels: list[str],
     ) -> SupportResponse:
-        order_id = self._extract_order_id(request.message)
+        order_id = self._extract_order_id(message)
         if order_id is None:
             return self._missing_order_id(Intent.RETURN_REQUEST, trace_id, safety_labels)
-        order = self.tools.get_order(order_id=order_id, customer_id=request.customer_id)
+        order = self.tools.get_order(order_id=order_id, customer_id=customer_id)
         if order is None or order.status != "delivered":
             return SupportResponse(
                 trace_id=trace_id,
@@ -241,8 +259,8 @@ class SupportOrchestrator:
         if decision.action is not PolicyAction.REQUIRE_CONFIRMATION:
             raise RuntimeError("return_policy_must_require_confirmation")
         pending = self.store.create_pending_action(
-            conversation_id=request.conversation_id,
-            customer_id=request.customer_id,
+            conversation_id=conversation_id,
+            customer_id=customer_id,
             kind=PendingActionKind.RETURN_REQUEST,
             payload={"order_id": order_id},
         )
