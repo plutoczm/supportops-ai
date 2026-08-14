@@ -4,7 +4,7 @@ import dataclasses
 import json
 import pathlib
 
-import app.retrieval
+from app import retrieval
 
 
 DEFAULT_KNOWLEDGE_PATH = pathlib.Path(__file__).with_name("data") / "knowledge_sources.json"
@@ -30,12 +30,12 @@ class KnowledgeChunker:
         self.max_chars = max_chars
         self.overlap_chars = overlap_chars
 
-    def chunk(self, source: KnowledgeSourceDocument) -> list[app.retrieval.RetrievalDocument]:
+    def chunk(self, source: KnowledgeSourceDocument) -> list[retrieval.RetrievalDocument]:
         text = source.text.strip()
         if not text:
             return []
 
-        chunks: list[app.retrieval.RetrievalDocument] = []
+        chunks: list[retrieval.RetrievalDocument] = []
         start = 0
         chunk_index = 0
         while start < len(text):
@@ -45,7 +45,7 @@ class KnowledgeChunker:
             chunk_text = text[start:end].strip()
             if chunk_text:
                 chunks.append(
-                    app.retrieval.RetrievalDocument(
+                    retrieval.RetrievalDocument(
                         document_id=source.document_id,
                         title=source.title,
                         text=chunk_text,
@@ -101,7 +101,7 @@ def build_retrieval_documents(
     sources: list[KnowledgeSourceDocument],
     *,
     chunker: KnowledgeChunker | None = None,
-) -> list[app.retrieval.RetrievalDocument]:
+) -> list[retrieval.RetrievalDocument]:
     chunker = chunker or KnowledgeChunker()
     documents = [chunk for source in sources for chunk in chunker.chunk(source)]
     index_ids = [document.index_id for document in documents]
@@ -112,7 +112,7 @@ def build_retrieval_documents(
 
 def load_retrieval_documents(
     path: str | pathlib.Path | None = None,
-) -> list[app.retrieval.RetrievalDocument]:
+) -> list[retrieval.RetrievalDocument]:
     return build_retrieval_documents(load_knowledge_sources(path))
 
 
