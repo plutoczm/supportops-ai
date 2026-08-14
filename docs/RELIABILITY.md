@@ -39,6 +39,12 @@ The Redis rate limiter is a fixed-window counter implemented atomically with Lua
 
 `RATE_LIMIT_FAIL_OPEN=true` is deliberately independent from mutation fail-closed policy. If the limiter backend is unavailable, support/read traffic may continue; operators can set it false for stricter deployments.
 
+## Reliability observability
+
+The reliability coordinator is wrapped by the v0.6 observability layer. `ping`, action TTL set/clear, action lock acquire/release and rate-limit decisions emit OpenTelemetry operation spans plus bounded Prometheus operation counters/histograms. Typed reliability exceptions also increment `supportops_degradation_total{component="reliability",reason=...}`.
+
+Action IDs, principal IDs and Redis keys are intentionally not Prometheus labels. Durable action/audit state remains the business evidence source; telemetry only measures runtime behavior.
+
 ## Local mode
 
 `RELIABILITY_BACKEND=local` provides the same interface using process-local locks/counters. It is intended for deterministic local/unit testing and **does not coordinate multiple workers or replicas**.
@@ -51,13 +57,7 @@ The current design reduces the risk of two API replicas concurrently resolving t
 
 ### No exactly-once claim
 
-The Redis lease has a fixed TTL and no renewal/heartbeat. If a synchronous downstream mutation exceeds the lease duration, a second replica may eventually acquire it. For this reason:
-
-- choose a lease longer than the expected mutation latency;
-- propagate the stable action ID as the downstream idempotency key;
-- keep the durable application receipt;
-- require a real external payment/refund provider to honor idempotency;
-- add lease renewal or a durable job/outbox workflow if mutations become long-running.
+The Redis lease has a fixed TTL and no renewal/heartbeat. If a synchronous downstream mutation exceeds the lease duration, a second replica may eventually acquire it. For this reason choose a lease longer than expected mutation latency, propagate the stable action ID as downstream idempotency key, keep the durable application receipt, require a real external provider to honor idempotency, and add lease renewal or a durable job/outbox workflow if mutations become long-running.
 
 ### No Redis HA claim
 
@@ -69,6 +69,6 @@ The limiter is fixed-window, not sliding-window/token-bucket. It is adequate as 
 
 ## Current verification
 
-The v0.5 successful CI run verifies unit-level expiry/no-side-effect, lock-busy behavior, fail-closed mutation behavior and 429/Retry-After. A separate real-Redis integration verifies cross-coordinator lock exclusion/release, Redis TTL presence and shared atomic rate-limit state.
+The v0.6 successful code-head CI run keeps the expiry/no-side-effect, lock-busy, fail-closed mutation and 429/Retry-After unit contracts green. A separate real-Redis integration still verifies cross-coordinator lock exclusion/release, Redis TTL presence and shared atomic rate-limit state. The new observability regression also checks that reliability/dependency failures can be represented as typed degradation metrics without introducing high-cardinality business identifiers into Prometheus.
 
-Future reliability work should be driven by observed requirements: lease renewal/outbox for longer asynchronous operations, Redis HA testing when deployment topology requires it, and observability/load tests before tuning limiter algorithms.
+Future reliability work should be driven by observed requirements: lease renewal/outbox for longer asynchronous operations and Redis HA testing when deployment topology requires it. The v0.6 metrics/traces should provide the evidence needed before changing lease duration or limiter algorithms.

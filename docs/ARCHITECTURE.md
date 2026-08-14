@@ -1,18 +1,18 @@
 # Architecture
 
-## Trust and state model
+## Trust, state and observability model
 
-SupportOps AI treats model output, user-provided identifiers and external adapters as untrusted. Identity, authorization, business policy, confirmation and mutation coordination are application responsibilities.
+SupportOps AI treats model output, user-provided identifiers and external adapters as untrusted. Identity, authorization, business policy, confirmation and mutation coordination are application responsibilities. Durable business evidence and runtime telemetry are intentionally separate planes.
 
 ```text
 Identity Provider
       |
 verified Principal
       |
-Guardrails -> Intent Router
-      |
-+-----+----------------------+------------------+
-|                            |                  |
+Guardrails -> Intent Router --------------------+
+      |                                         |
++-----+----------------------+------------------+|
+|                            |                  ||
 Knowledge/RAG             read tools        mutation intent
 |                            |                  |
 answerability             customer scope       policy
@@ -31,6 +31,11 @@ answerability             customer scope       policy
                                       receipt / terminal state
                                                 |
                                              audit
+
+Across the request path:
+  OpenTelemetry spans -> causality / duration / exception
+  Prometheus metrics  -> bounded aggregate latency/rate/degradation
+  PostgreSQL audit    -> durable actor/resource/business evidence
 ```
 
 ## Durable state vs distributed coordination
@@ -90,13 +95,7 @@ The Redis lock is acquired with a random token and `SET NX PX`; release uses a t
 
 ## Exactly-once boundary
 
-The implementation does **not** claim exactly-once execution. The lock lease has a fixed TTL and currently has no heartbeat/renewal. If a downstream mutation exceeds the configured lease, another replica can eventually obtain the lock. Therefore:
-
-- the lease must be longer than the expected synchronous mutation latency;
-- `action_id` remains the application idempotency key;
-- the local database receipt protects retried local mutations;
-- a real external refund/payment provider must also support/receive the same idempotency key;
-- lease renewal or a durable job/outbox workflow is the next step if mutations become long-running.
+The implementation does **not** claim exactly-once execution. The lock lease has a fixed TTL and currently has no heartbeat/renewal. If a downstream mutation exceeds the configured lease, another replica can eventually obtain the lock. Therefore the lease must exceed expected synchronous mutation latency, `action_id` remains the application idempotency key, the local database receipt protects retried local mutations, and an external refund/payment provider must also support the same idempotency key. Lease renewal or a durable job/outbox workflow is appropriate if mutations become long-running.
 
 ## Confirmation lifetime
 
@@ -110,18 +109,29 @@ Redis uses an atomic Lua-backed **fixed-window** counter. Current API scopes inc
 
 Exceeded limits return HTTP 429 and `Retry-After`. This is intentionally described as fixed-window; it is not a sliding-window or token-bucket implementation.
 
-## Failure policy matrix
+## Failure policy
 
-| Dependency/operation | Default behavior | Rationale |
-|---|---|---|
-| Redis startup in Redis deployment mode | fail fast | do not start a replica that cannot provide configured coordination |
-| Redis action-lock/TTL refresh before mutation | fail closed | no side effect when cross-replica coordination is unavailable |
-| action lock busy | 409 | another resolution may be in flight |
-| rate-limit Redis failure | fail open (configurable) | limiter outage should not automatically take down support/read traffic |
-| dense retrieval failure | visible BM25 fallback when enabled | availability with explicit degradation; answerability threshold unchanged |
-| dense retrieval failure in strict mode | fail fast/propagate | avoid silently changing configured semantics |
+Redis startup in Redis deployment mode fails fast. Redis action-lock/TTL failure before mutation fails closed by default. A busy action lock returns 409. Rate-limit Redis failure defaults to fail-open and is separately configurable. Dense retrieval failure may visibly fall back to BM25 when enabled while preserving the answerability threshold; strict mode propagates the failure.
 
 Lock-release or TTL-cleanup failures **after** a completed mutation are audited as degraded; they do not roll back a business mutation whose durable receipt/state has already been written.
+
+## Observability plane
+
+The application creates OpenTelemetry spans around HTTP request handling and controlled application operations rather than treating audit events as performance traces. W3C `traceparent` is accepted at the HTTP boundary. The OTLP/HTTP exporter is optional and configured with an external full traces endpoint.
+
+Representative operation spans include routing, hybrid/dense retrieval, embedding, Qdrant startup synchronization, refund/return policy, Redis reliability operations and business tools. The exact span set depends on intent.
+
+Prometheus exposes process-local counters/histograms at `/metrics`. Metric labels are restricted to low-cardinality dimensions: route template, method/status class, component, operation, backend, outcome and typed degradation reason. Customer/order/action/ticket/trace IDs and raw message/model text are excluded from metrics labels.
+
+This separation gives three different evidence layers:
+
+```text
+PostgreSQL audit -> durable business/security accountability
+OpenTelemetry    -> per-request causality and component timing
+Prometheus       -> aggregate rate/latency/degradation trends
+```
+
+The repository does not bundle Prometheus/Grafana/OTel Collector infrastructure and does not claim a production alert/SLO threshold. See `docs/OBSERVABILITY.md`.
 
 ## Identity and authorization
 
@@ -139,7 +149,7 @@ Tickets maintain priority, assignee, SLA deadline and validated state transition
 
 ## Release/CI contract
 
-GitHub Actions starts PostgreSQL 17, standalone Redis 7.4 and Qdrant v1.18.2. It verifies Alembic upgrade/drift, unit/coverage gates, the 140-case safety set, 60-case retrieval set, real Redis reliability integration, real Qdrant lifecycle integration and Docker build.
+GitHub Actions starts PostgreSQL 17, standalone Redis 7.4 and Qdrant v1.18.2. It verifies Alembic upgrade/drift, unit/coverage gates, the 140-case safety set, 60-case retrieval set, the deterministic 60-request observability latency regression, real Redis reliability integration, real Qdrant lifecycle integration and Docker build.
 
 Current adapter boundaries:
 
@@ -149,6 +159,8 @@ Current adapter boundaries:
 - MCP Python SDK v2;
 - OpenAI-compatible optional LLM and embedding providers;
 - BM25 + in-memory/Qdrant dense retrieval;
+- OpenTelemetry SDK + optional OTLP/HTTP trace exporter;
+- Prometheus process-local registry exposed at `/metrics`;
 - versioned bundled JSON knowledge source.
 
-Not yet claimed: Redis Sentinel/Cluster HA, lock renewal, distributed exactly-once execution, external payment-provider idempotency verification, OpenTelemetry/Prometheus SLOs, external knowledge publication workflows or production semantic/model quality.
+Not yet claimed: Redis Sentinel/Cluster HA, lock renewal, distributed exactly-once execution, external payment-provider idempotency verification, bundled Prometheus/Grafana/OTel Collector deployment, production alert/SLO thresholds, token/cost accounting, external knowledge publication workflows or production semantic/model quality.
