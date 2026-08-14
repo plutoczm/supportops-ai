@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from app.retrieval import RetrievalDocument
 
@@ -113,7 +112,7 @@ def load_retrieval_documents(path: str | Path | None = None) -> list[RetrievalDo
     return build_retrieval_documents(load_knowledge_sources(path))
 
 
-def _parse_source(raw: dict[str, Any]) -> KnowledgeSourceDocument:
+def _parse_source(raw: dict[str, object]) -> KnowledgeSourceDocument:
     required = ("document_id", "version", "title", "text", "source_uri")
     values: dict[str, str] = {}
     for field in required:
