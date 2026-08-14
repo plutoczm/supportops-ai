@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "supportops-ai"
-version = "0.3.0"
+version = "0.4.0"
 description = "Production-oriented AI customer operations platform"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,10 +33,16 @@ rag = [
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+[tool.setuptools.package-data]
+app = ["data/*.json"]
+
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "integration: requires external service adapters",
+]
 
 [tool.ruff]
 line-length = 100
