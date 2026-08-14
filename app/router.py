@@ -41,6 +41,7 @@ class IntentRouter:
         normalized = text.lower()
         has_order_id = bool(re.search(r"\bord-\d{4,}\b", normalized))
         question_markers = ("政策", "规则", "条件", "能否", "可以吗", "how", "policy", "eligible")
+        policy_markers = ("政策", "规则", "条件", "policy", "how does", "eligible")
 
         if any(word in normalized for word in ("投诉", "complaint", "人工客服", "人工处理")):
             return RoutingDecision(
@@ -68,10 +69,19 @@ class IntentRouter:
                 confidence=0.95,
                 reason="return keyword",
             )
-        if any(
-            word in normalized
-            for word in ("订单状态", "物流", "到哪", "order status", "shipping", "tracking")
+
+        order_status_terms = ("订单状态", "物流", "到哪", "order status", "shipping", "tracking")
+        if (
+            not has_order_id
+            and any(word in normalized for word in order_status_terms)
+            and any(word in normalized for word in policy_markers)
         ):
+            return RoutingDecision(
+                intent=Intent.KNOWLEDGE,
+                confidence=0.9,
+                reason="shipping/order policy question without order",
+            )
+        if any(word in normalized for word in order_status_terms):
             return RoutingDecision(
                 intent=Intent.ORDER_STATUS,
                 confidence=0.93,
