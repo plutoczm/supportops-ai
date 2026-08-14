@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import re
 
 from evals.cases import build_cases
