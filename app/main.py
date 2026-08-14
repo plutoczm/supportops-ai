@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from time import perf_counter
 from typing import Annotated
 from uuid import uuid4
@@ -90,6 +91,14 @@ def _enforce_rate_limit(
 
 def create_app(container: ServiceContainer | None = None) -> FastAPI:
     services = container or build_container()
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        try:
+            yield
+        finally:
+            services.observability.shutdown()
+
     app = FastAPI(
         title="SupportOps AI",
         version="0.6.0",
@@ -97,9 +106,9 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
             "AI customer operations with guarded tools, identity, audit, distributed "
             "reliability, observability and human handoff."
         ),
+        lifespan=lifespan,
     )
     app.state.services = services
-    app.add_event_handler("shutdown", services.observability.shutdown)
 
     @app.middleware("http")
     async def observe_request(request: Request, call_next):
