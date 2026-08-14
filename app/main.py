@@ -26,7 +26,10 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     app = FastAPI(
         title="SupportOps AI",
         version="0.2.0",
-        description="AI customer operations with guarded tools, identity, audit, and human handoff.",
+        description=(
+            "AI customer operations with guarded tools, identity, audit, "
+            "and human handoff."
+        ),
     )
 
     def principal(

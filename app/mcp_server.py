@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from pydantic import AnyHttpUrl
-
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
+from pydantic import AnyHttpUrl
 
 from app.auth import AuthenticationError, AuthService, Principal
 from app.container import ServiceContainer, build_container

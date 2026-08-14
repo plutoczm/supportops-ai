@@ -43,7 +43,11 @@ class TicketRow(Base):
     conversation_id: Mapped[str] = mapped_column(String(128), index=True)
     reason: Mapped[str] = mapped_column(String(1000))
     status: Mapped[str] = mapped_column(String(32), default=TicketStatus.OPEN.value, index=True)
-    priority: Mapped[str] = mapped_column(String(32), default=TicketPriority.NORMAL.value, index=True)
+    priority: Mapped[str] = mapped_column(
+        String(32),
+        default=TicketPriority.NORMAL.value,
+        index=True,
+    )
     assignee_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     sla_due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
