@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from evals.e2e_cases import E2EScenario
 from evals.run_e2e_evals import _ratio, _run_scenario
