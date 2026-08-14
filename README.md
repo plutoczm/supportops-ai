@@ -167,7 +167,7 @@ docker build -t supportops-ai:ci .
 
 ### Latest verified CI baseline
 
-GitHub Actions on the current foundation branch verifies:
+The latest verified code run before this documentation-only update reports:
 
 - Ruff and compile checks: passed
 - PostgreSQL 17 migration contract: `upgrade head`, `current --check-heads`, and `alembic check` passed
