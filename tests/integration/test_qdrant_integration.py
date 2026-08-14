@@ -21,7 +21,10 @@ from app.retrieval import (
 
 pytest.importorskip("qdrant_client")
 if os.getenv("RUN_QDRANT_INTEGRATION") != "1":
-    pytest.skip("set RUN_QDRANT_INTEGRATION=1 to run Qdrant integration tests", allow_module_level=True)
+    pytest.skip(
+        "set RUN_QDRANT_INTEGRATION=1 to run Qdrant integration tests",
+        allow_module_level=True,
+    )
 
 pytestmark = pytest.mark.integration
 
