@@ -97,7 +97,7 @@ class IntentRouter:
             return RoutingDecision(
                 intent=Intent.KNOWLEDGE,
                 confidence=0.92,
-                reason="shipping-address policy question without order",
+                reason="shipping/order policy question without order",
             )
         if (
             not has_order_id
