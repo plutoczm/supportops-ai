@@ -2,7 +2,6 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
-
 from app.auth import Principal
 from app.config import Settings
 from app.container import build_container
@@ -13,7 +12,6 @@ from app.reliability import (
     MutationLockBusy,
     ReliabilityBackendError,
 )
-
 
 CUSTOMER_HEADERS = {
     "X-Principal-Id": "user-1",
@@ -63,7 +61,8 @@ def test_api_rate_limit_returns_429_with_retry_after(tmp_path):
     )
     client = TestClient(create_app(build_container(settings)))
     payload = {"conversation_id": "CONV-RATE", "message": "订单状态 ORD-1001"}
-    assert client.post("/v1/support/messages", headers=CUSTOMER_HEADERS, json=payload).status_code == 200
+    first = client.post("/v1/support/messages", headers=CUSTOMER_HEADERS, json=payload)
+    assert first.status_code == 200
     limited = client.post("/v1/support/messages", headers=CUSTOMER_HEADERS, json=payload)
     assert limited.status_code == 429
     assert limited.json()["detail"] == "rate_limit_exceeded"
