@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+from app.domain import Intent, RoutingDecision
+from app.model_gateway import ModelGatewayError, OpenAICompatibleModel
+
+
+class IntentRouter:
+    """LLM-assisted intent classification with a deterministic fallback."""
+
+    def __init__(self, model: OpenAICompatibleModel | None = None) -> None:
+        self.model = model
+
+    def route(self, text: str) -> RoutingDecision:
+        if self.model is not None:
+            decision = self._route_with_model(text)
+            if decision is not None:
+                return decision
+        return self._route_with_rules(text)
+
+    def _route_with_model(self, text: str) -> RoutingDecision | None:
+        system = (
+            "Classify one support message. Return JSON only with keys intent, confidence, reason. "
+            "Allowed intent values: knowledge, order_status, refund, return_request, complaint, "
+            "unknown. Never choose tools and never claim that an action was executed."
+        )
+        try:
+            data = self.model.chat_json(system=system, user=text)
+            return RoutingDecision(
+                intent=Intent(str(data["intent"])),
+                confidence=float(data.get("confidence", 0.7)),
+                reason=str(data.get("reason", "model classification")),
+                source="llm",
+            )
+        except (ModelGatewayError, KeyError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _route_with_rules(text: str) -> RoutingDecision:
+        normalized = text.lower()
+        if any(word in normalized for word in ("投诉", "complaint", "人工客服", "人工处理")):
+            return RoutingDecision(intent=Intent.COMPLAINT, confidence=0.96, reason="complaint keyword")
+        if any(word in normalized for word in ("退款", "refund", "退钱")):
+            return RoutingDecision(intent=Intent.REFUND, confidence=0.95, reason="refund keyword")
+        if any(word in normalized for word in ("退货", "return item", "return this")):
+            return RoutingDecision(
+                intent=Intent.RETURN_REQUEST,
+                confidence=0.95,
+                reason="return keyword",
+            )
+        if any(
+            word in normalized
+            for word in ("订单状态", "物流", "到哪", "order status", "shipping", "tracking")
+        ):
+            return RoutingDecision(
+                intent=Intent.ORDER_STATUS,
+                confidence=0.93,
+                reason="order-status keyword",
+            )
+        if any(
+            word in normalized
+            for word in ("政策", "规则", "怎么", "如何", "能否", "coupon", "policy", "how")
+        ):
+            return RoutingDecision(intent=Intent.KNOWLEDGE, confidence=0.82, reason="knowledge keyword")
+        return RoutingDecision(intent=Intent.UNKNOWN, confidence=0.5, reason="no known intent")
