@@ -76,11 +76,18 @@ open -> assigned -> pending_customer -> assigned
 
 A ticket cannot be resolved before assignment. Closed tickets cannot be reassigned.
 
+## Database release path
+
+Local tests can opt into SQLAlchemy `create_all()` for isolated temporary databases. The deployment path does not: the application image sets `DATABASE_AUTO_CREATE_SCHEMA=false` and runs `alembic upgrade head` before API startup.
+
+CI starts a clean PostgreSQL 17 service and executes `upgrade head`, `current --check-heads`, and `alembic check`. This gives the schema an explicit, replayable revision history and fails a pull request when ORM metadata changes without a matching migration.
+
 ## Current adapters
 
 - API: FastAPI
 - Authentication: development principal headers or JWT/JWKS resource-server verification
 - Persistence: SQLAlchemy, SQLite locally, PostgreSQL in Docker Compose
+- Schema evolution: Alembic migrations, validated against PostgreSQL in CI
 - Model: optional OpenAI-compatible chat-completions endpoint
 - MCP: official Python SDK v2
 - Retrieval: deterministic local evidence baseline
