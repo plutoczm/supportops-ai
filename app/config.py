@@ -11,6 +11,13 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_optional_int(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    return int(value)
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     database_url: str = "sqlite:///./supportops.db"
@@ -20,6 +27,17 @@ class Settings:
     llm_api_key: str | None = None
     llm_model: str | None = None
     refund_human_review_threshold: float = 500.0
+
+    knowledge_backend: str = "local"
+    embedding_backend: str = "deterministic"
+    embedding_base_url: str | None = None
+    embedding_api_key: str | None = None
+    embedding_model: str | None = None
+    embedding_dimension: int | None = None
+    qdrant_url: str = "http://127.0.0.1:6333"
+    qdrant_api_key: str | None = None
+    qdrant_collection: str = "supportops_knowledge"
+    retrieval_min_evidence_score: float = 0.16
 
     auth_mode: str = "dev"
     auth_issuer: str | None = None
@@ -45,6 +63,18 @@ class Settings:
             refund_human_review_threshold=float(
                 os.getenv("REFUND_HUMAN_REVIEW_THRESHOLD", "500")
             ),
+            knowledge_backend=os.getenv("KNOWLEDGE_BACKEND", "local").lower(),
+            embedding_backend=os.getenv("EMBEDDING_BACKEND", "deterministic").lower(),
+            embedding_base_url=os.getenv("EMBEDDING_BASE_URL") or None,
+            embedding_api_key=os.getenv("EMBEDDING_API_KEY") or None,
+            embedding_model=os.getenv("EMBEDDING_MODEL") or None,
+            embedding_dimension=_env_optional_int("EMBEDDING_DIMENSION"),
+            qdrant_url=os.getenv("QDRANT_URL", "http://127.0.0.1:6333"),
+            qdrant_api_key=os.getenv("QDRANT_API_KEY") or None,
+            qdrant_collection=os.getenv("QDRANT_COLLECTION", "supportops_knowledge"),
+            retrieval_min_evidence_score=float(
+                os.getenv("RETRIEVAL_MIN_EVIDENCE_SCORE", "0.16")
+            ),
             auth_mode=os.getenv("AUTH_MODE", "dev").lower(),
             auth_issuer=os.getenv("AUTH_ISSUER") or None,
             auth_audience=os.getenv("AUTH_AUDIENCE") or None,
@@ -62,3 +92,9 @@ class Settings:
     @property
     def llm_enabled(self) -> bool:
         return bool(self.llm_base_url and self.llm_model)
+
+    @property
+    def production_embeddings_enabled(self) -> bool:
+        return self.embedding_backend == "openai" and bool(
+            self.embedding_base_url and self.embedding_model
+        )
