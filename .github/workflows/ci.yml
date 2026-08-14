@@ -34,6 +34,10 @@ jobs:
         run: ruff check .
       - name: Compile
         run: python -m compileall app evals migrations
+      - name: Compose config
+        run: |
+          docker compose config -q
+          docker compose --profile rag config -q
       - name: PostgreSQL migration contract
         env:
           DATABASE_URL: postgresql+psycopg://supportops:supportops@localhost:5432/supportops_ci
