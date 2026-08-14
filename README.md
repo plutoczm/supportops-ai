@@ -1,32 +1,29 @@
 # SupportOps AI
 
-Production-oriented **AI Customer Operations Platform** for e-commerce/SaaS support. The project focuses on engineering boundaries that are usually absent from agent demos: authenticated identity, grounded retrieval, safe side effects, human escalation, durable workflow state, distributed coordination, external-dependency degradation, observability, auditability and measurable evaluation.
+Production-oriented **AI Customer Operations Platform** for e-commerce/SaaS support. The project focuses on engineering boundaries that are usually absent from agent demos: authenticated identity, grounded retrieval, safe side effects, human escalation, durable workflow state, distributed coordination, external-dependency degradation, observability, auditability and measurable end-to-end evaluation.
 
 ## What it demonstrates
 
 - **Bounded LLM authority**: an LLM may classify intent and compose grounded answers; it never authorizes a refund/return mutation.
 - **Authenticated customer scope**: HTTP and MCP access derive customer identity from verified principals rather than model/user-controlled `customer_id` arguments.
-- **Safe mutations**: refund/return requests create persisted pending actions; explicit authenticated confirmation is required, high-value refunds enter human review, and the action ID is propagated as the idempotency key.
-- **Distributed reliability**: PostgreSQL owns durable action state and expiry; Redis coordinates cross-replica action locks, TTL mirrors and fixed-window rate limits.
+- **Safe mutations**: refund/return requests create durable pending actions; explicit authenticated confirmation is required, high-value refunds enter human review, and the action ID is propagated as the idempotency key.
+- **Distributed reliability**: PostgreSQL owns durable action state/expiry while Redis coordinates cross-replica locks, TTL mirrors and fixed-window rate limits.
 - **Human operations**: tickets have priority, assignment, SLA deadlines and validated state transitions with durable trace-linked audit records.
-- **Hybrid retrieval**: BM25 sparse retrieval + dense adapter + weighted RRF + score-aware reranking + answerability gate.
-- **Knowledge lifecycle**: versioned sources become deterministic chunks with stable lineage/content hashes; Qdrant synchronization only re-embeds changed chunks and deletes stale vectors.
-- **Visible degradation**: embedding/Qdrant and Redis failures follow explicit fail-open/fail-closed policies rather than being silently swallowed.
+- **Hybrid retrieval**: BM25 + dense retrieval + weighted RRF + score-aware reranking + answerability gate.
+- **Knowledge lifecycle**: versioned sources become deterministic chunks with lineage/content hashes; Qdrant synchronization re-embeds changed chunks only and deletes stale vectors.
+- **Visible degradation**: embedding/Qdrant and Redis failures follow explicit typed fail-open/fail-closed policies.
 - **Observability**: low-cardinality Prometheus metrics plus OpenTelemetry spans cover HTTP, routing, retrieval/embedding, policy, Redis coordination and business-tool execution.
-- **Evaluation**: routing/safety, retrieval, stateful business tests, a deterministic local latency regression workload, real Redis integration and real Qdrant lifecycle integration are separate gates.
+- **End-to-end evaluation discipline**: stateful request-to-tool workflows are scored from durable audit events and database side effects, with frozen regression-set lifecycle rules instead of repeatedly tuning a so-called holdout.
 
 ## Core workflow
 
 ```text
 Authenticated customer
         |
-        v
 Input Guardrails ---> injection block / PII redaction
         |
-        v
 Intent Router ------> optional LLM + deterministic fallback
         |
-        v
 Application Orchestrator
    |              |                    |
 Knowledge      Read tools          Mutating intent
@@ -50,87 +47,66 @@ answer/abstain        durable pending action   ticket/SLA
                        audit + terminal state
 ```
 
-## Observability plane
+## v0.7 end-to-end evaluation
 
-Business audit and APM are deliberately separate concerns:
+The v0.7 evaluation layer exercises the assembled FastAPI application with fresh seeded state per scenario. It does **not** infer tool selection from answer wording: `knowledge.search`, `order.get`, `refund.quote`, `refund.execute`, `return.execute` and `ticket.create` are scored from durable audit operations and their resource IDs. Order snapshots separately detect unauthorized side effects.
+
+The suite measures workflow/tool selection, tool/resource arguments, task completion, escalation recall, unnecessary handoff, hallucinated action rate, confirmation/cancellation safety, deterministic citation/evidence consistency and cross-customer isolation.
+
+### Holdout lifecycle
+
+The first v1 execution was performed before changing Router/business behavior based on that suite. It contained **61 scenarios** with zero exact normalized overlap against the existing 140-case routing/safety and 60-case retrieval inputs. First-run results included workflow/tool selection **0.9836**, task completion **0.9836**, citation/evidence consistency **0.95**, and perfect mutation/handoff/isolation safety surfaces. It exposed one shipping-address policy routing miss.
+
+After that result was observed, v1 was treated as **frozen regression data**. An over-broad first Router fix was then caught by the restored original v1 because it regressed a missing-order-id tracking flow.
+
+A separately constructed 60-scenario v2 was run next. Its first execution exposed two new defects: an account-security paraphrase failed evidence retrieval, and a Chinese structural prompt-injection variant reached refund preparation. v2 was therefore immediately reclassified as regression data before implementation fixes were made. The fixes were general rather than benchmark-string-specific: address-policy/tracking disambiguation, compound/login query normalization, and broader structural Chinese instruction-override detection.
+
+Current regression gates keep the **original v1 and v2 inputs unchanged**. The latest green code run reports:
 
 ```text
-Durable audit -> actor / resource / policy / mutation / evidence lineage
-OpenTelemetry -> request causality / component timing / dependency failure
-Prometheus -> aggregate request / operation / degradation rates and latency histograms
+v1 regression: 61 scenarios
+  tool selection / task completion / citation consistency: 1.0 / 1.0 / 1.0
+  hallucinated actions: 0.0
+  confirmation / cancellation / cross-customer safety: 1.0 / 1.0 / 1.0
+
+v2 regression: 60 scenarios
+  tool selection / task completion: 0.9833 / 0.9833
+  tool arguments: 1.0
+  escalation recall: 1.0
+  hallucinated actions: 0.0
+  confirmation / cancellation safety: 1.0 / 1.0
+  citation consistency: 0.95
+  cross-customer isolation: 1.0
 ```
 
-The API exposes `/metrics` when `METRICS_ENABLED=true`. OpenTelemetry tracing accepts W3C `traceparent`; an OTLP/HTTP trace endpoint can be configured without coupling the application to a specific collector/vendor.
+The remaining v2 miss is intentionally retained: `how do tracking details and carrier updates work after dispatch?` is ambiguous between a generic shipping-policy question and the order-status flow. The current deterministic router chooses `order_status`; we do not keep changing rules solely to make a known regression set read 100%.
 
-Representative operation spans include `agent.route`, `retrieval.hybrid.search`, `retrieval.dense.search`, `embedding.embed`, `policy.refund`, `policy.return`, `reliability.*` and `tool.*`. Qdrant startup synchronization is separately instrumented as `retrieval.qdrant.startup_sync`.
+**These are repository-held deterministic regression metrics, not external blind evaluation or production customer-support accuracy.** Exact normalized non-overlap does not prove semantic independence. Because both v1 and v2 have now been observed, another generalization claim requires a separately prepared/frozen unseen set (or external/human-owned evaluation) before candidate changes are evaluated. See `docs/E2E_EVALUATION.md`.
 
-Prometheus labels are intentionally bounded. Route template, component, operation, backend, outcome, status class and typed degradation reason are metrics dimensions. **Customer/order/action/ticket/trace IDs and arbitrary message/model text are not Prometheus labels.** High-cardinality identifiers remain in traces or durable audit records instead.
+## Observability and reliability boundaries
 
-Example tracing configuration:
+Business audit and APM are separate concerns:
 
 ```text
-METRICS_ENABLED=true
-TRACING_ENABLED=true
-OTEL_SERVICE_NAME=supportops-ai
-OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
+PostgreSQL audit -> durable actor/resource/policy/mutation/evidence history
+OpenTelemetry    -> request causality, component duration and exceptions
+Prometheus       -> aggregate request/operation/degradation metrics
 ```
 
-The repository does not bundle a Prometheus server, Grafana or an OpenTelemetry Collector. See `docs/OBSERVABILITY.md` for the metric contract, PromQL examples and interpretation limits.
+Prometheus labels are intentionally bounded; customer/order/action/ticket/trace IDs and arbitrary message/model text are excluded. Redis is a coordination plane, not the business source of truth. Mutation confirmation re-reads PostgreSQL state inside the distributed action lock and uses `action_id` as the idempotency key.
 
-## Distributed mutation reliability
+**This repository does not claim exactly-once execution.** The Redis lease has no heartbeat/renewal; an external payment/refund provider must honor the same idempotency key if used in production. The repository also does not claim Redis/Qdrant HA or production latency SLOs.
 
-The reliability model deliberately separates durable business state from distributed coordination:
+## Knowledge retrieval boundary
 
-```text
-PostgreSQL = source of truth
-  pending action status
-  created_at / expires_at
-  action receipt / idempotency key
-  order/ticket/audit state
-
-Redis = coordination/control plane
-  action-scoped lease lock
-  confirmation TTL mirror
-  principal-scoped fixed-window rate limits
-```
-
-A confirmation does not trust the state read before locking. The handler acquires an action-scoped lock, **re-reads the pending action inside the lock**, checks durable `expires_at`, then executes the mutation with `action_id` as its idempotency key. Executed/cancelled/expired actions are terminal and retries return the persisted result/state rather than preparing a second mutation.
-
-Default deployment behavior:
+The bundled knowledge source is versioned and deterministically chunked. Local/CI uses a deterministic hash-vector representation for reproducibility; it is **not a semantic embedding model**. Production-capable dense retrieval uses an OpenAI-compatible embedding endpoint plus Qdrant. Qdrant currently stores the dense leg only; BM25 remains application-side.
 
 ```text
-RELIABILITY_BACKEND=redis
-RELIABILITY_FAIL_CLOSED_MUTATIONS=true
-ACTION_CONFIRMATION_TTL_SECONDS=600
-ACTION_LOCK_TTL_SECONDS=15
-RATE_LIMIT_WINDOW_SECONDS=60
-SUPPORT_MESSAGE_RATE_LIMIT=30
-ACTION_CONFIRMATION_RATE_LIMIT=10
-RATE_LIMIT_FAIL_OPEN=true
-```
-
-If Redis coordination is unavailable during a mutation and fail-closed mode is enabled, confirmation returns a service error before the side effect. Rate-limit backend failure is independently configurable and defaults to fail-open so an unavailable limiter does not take down read/support traffic. Rate-limit violations return HTTP `429` with `Retry-After`.
-
-**This is not an exactly-once claim.** The current Redis lock uses a fixed lease without heartbeat/renewal. The lock reduces overlapping resolution across replicas; the durable receipt/idempotency key remains the retry-safety boundary, and an external payment/refund provider must honor idempotency as well. See `docs/RELIABILITY.md`.
-
-## Knowledge lifecycle and retrieval
-
-The bundled knowledge source contains versioned records with `document_id`, `version`, `title`, `text` and `source_uri`. A deterministic chunker produces stable chunk IDs such as `KB-REFUND-01:1:0000` plus SHA-256 content hashes. Citations expose document/version/chunk/source lineage and audit events retain the evidence version used by the answer.
-
-The bundled JSON is a **versioned source artifact**, not an admin CMS or publication service.
-
-Local/CI retrieval is self-contained:
-
-```text
+# local/CI
 KNOWLEDGE_BACKEND=local
 EMBEDDING_BACKEND=deterministic
-```
 
-The deterministic hash vector is a reproducible test representation, **not a semantic embedding model**.
-
-Production-capable dense configuration:
-
-```text
+# production-capable dense path
 KNOWLEDGE_BACKEND=qdrant
 EMBEDDING_BACKEND=openai
 EMBEDDING_BASE_URL=https://your-embedding-endpoint/v1
@@ -139,78 +115,26 @@ EMBEDDING_DIMENSION=<provider dimension>
 QDRANT_URL=http://qdrant:6333
 ```
 
-Qdrant stores the dense leg only; BM25 remains application-side sparse retrieval. Startup sync embeds/upserts only new/changed chunks and deletes stale remote vectors. Typed dense failures may degrade to BM25 when explicitly allowed, without lowering the answerability threshold.
-
-## Customer API example
-
-Development auth is explicit and local-only:
-
-```bash
-curl -X POST http://localhost:8000/v1/support/messages \
-  -H 'Content-Type: application/json' \
-  -H 'X-Principal-Id: user-1' \
-  -H 'X-Customer-Id: CUST-001' \
-  -H 'X-Roles: customer' \
-  -d '{"conversation_id":"CONV-001","message":"我要退款 ORD-1001"}'
-```
-
-A refund response can contain `pending_action_id` and `pending_action_expires_at`; no refund has happened yet. Confirm explicitly:
-
-```bash
-curl -X POST http://localhost:8000/v1/actions/ACT-.../confirm \
-  -H 'Content-Type: application/json' \
-  -H 'X-Principal-Id: user-1' \
-  -H 'X-Customer-Id: CUST-001' \
-  -H 'X-Roles: customer' \
-  -d '{"confirm":true}'
-```
-
-`{"confirm": false}` cancels the pending action without a business mutation. An expired action returns terminal `expired` state and cannot execute.
-
-## Human-agent and MCP boundaries
-
-Agent workspace endpoints include ticket listing, assignment, state transitions and trace-audit lookup. MCP v2 exposes bounded search/read/refund-request tools; tools do not accept `customer_id`, and there is deliberately no final refund-confirmation/execution MCP tool.
-
 ## Run locally
-
-Single-process local reliability:
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 uvicorn app.main:app --reload
 ```
 
-PostgreSQL + Redis deployment path:
+PostgreSQL + Redis:
 
 ```bash
 docker compose up --build
 ```
 
-Optional Qdrant dense service:
+Optional Qdrant adapter:
 
 ```bash
 pip install -e ".[dev,rag]"
 docker compose --profile rag up -d qdrant
-```
-
-## Authentication modes
-
-Development:
-
-```text
-AUTH_MODE=dev
-```
-
-JWT/OIDC-compatible resource-server mode:
-
-```text
-AUTH_MODE=jwt
-AUTH_ISSUER=https://idp.example.com/
-AUTH_AUDIENCE=supportops-api
-AUTH_JWKS_URL=https://idp.example.com/.well-known/jwks.json
-AUTH_ALGORITHM=RS256
 ```
 
 ## Quality gates
@@ -229,6 +153,8 @@ alembic check
 pytest --cov=app --cov-report=term-missing --cov-fail-under=75
 python -m evals.run_evals
 python -m evals.run_retrieval_evals
+python -m evals.run_e2e_regression
+python -m evals.run_e2e_regression_v2
 python -m evals.run_slo_smoke
 
 RUN_REDIS_INTEGRATION=1 pytest -q -m integration tests/integration/test_redis_integration.py
@@ -238,34 +164,30 @@ RUN_QDRANT_INTEGRATION=1 pytest -q -m integration tests/integration/test_qdrant_
 docker build -t supportops-ai:ci .
 ```
 
-### Latest verified v0.6 code baseline
+### Latest verified v0.7 code baseline
 
-The verified code run on head `046955bc6b1112a2caeee09251b79d6dc0c59fe4` completed the full GitHub Actions job successfully:
+GitHub Actions run `31816447593` completed the full pre-release code pipeline successfully:
 
-- Ruff / compile / default + `rag` Compose: passed
-- PostgreSQL 17 Alembic migration contract through revision `20260814_0002`: passed; `alembic check` reports no drift
-- regular pytest: **46 passed, 2 skipped**
-- application coverage: **81.45%** under a 75% gate
-- routing/safety benchmark: **140 cases**; routing accuracy / macro-F1 **1.0 / 1.0**; injection block / PII redaction / mutation-policy accuracy **1.0 / 1.0 / 1.0**; unsafe mutations **0**
-- retrieval benchmark: **60 cases**; Recall@1 / Recall@3 / MRR@3 **1.0 / 1.0 / 1.0**; citation presence / unsupported abstention **1.0 / 1.0**
-- local observability workload: **60 requests**, success rate **1.0**, errors **0**, degraded responses **0**
-- local HTTP P50 / P95: **5.652 ms / 8.508 ms**; knowledge P95 **8.924 ms**; order P95 **6.745 ms**
-- real Redis reliability integration: **1 passed**
+- regular pytest: **60 passed, 2 skipped**
+- application coverage: **81.54%** under a 75% gate
+- routing/safety: **140 cases**, routing accuracy/macro-F1 **1.0 / 1.0**, injection block/PII redaction/mutation policy **1.0 / 1.0 / 1.0**, unsafe mutations **0**
+- retrieval: **60 cases**, Recall@1/3/MRR@3 **1.0 / 1.0 / 1.0**, citation presence/unsupported abstention **1.0 / 1.0**
+- original v1 E2E regression: **61 scenarios**, all reported task/safety surfaces at gate with no failures
+- v2 E2E regression: **60 scenarios**, tool selection/task completion **0.9833 / 0.9833**, citation consistency **0.95**, all mutation/handoff/isolation safety gates passed
+- local observability workload: **60/60 successful**, zero errors/degradation and local HTTP P95 **6.336 ms** in that CI run
+- real standalone Redis integration: **1 passed**
 - real Qdrant lifecycle integration: **2 passed**
-- Docker image build with `supportops-ai==0.6.0`: passed
+- PostgreSQL migration through `20260814_0002`: passed with no Alembic drift
+- Docker build: passed
 
-The latency workload uses FastAPI TestClient + SQLite + deterministic local retrieval on a GitHub Actions runner. It is a **local regression signal only**, not a production latency SLO, networked PostgreSQL/Redis/Qdrant benchmark, or external LLM/embedding-provider measurement.
-
-The Redis integration uses a real standalone Redis 7.4 service and the Qdrant integration uses a real Qdrant v1.18.2 service, but neither establishes cluster HA.
-
-All benchmark numbers are curated regression/integration metrics. They must not be presented as real-world support accuracy, arbitrary-attack security efficacy, exactly-once delivery, Redis/Qdrant HA, external embedding semantic quality, or production latency/cost.
+The latency workload uses TestClient + SQLite + deterministic local retrieval and is a **catastrophic-regression signal only**, not a production SLO. All benchmark numbers are curated regression/integration metrics rather than production accuracy/security/HA claims.
 
 ## Engineering roadmap
 
-Completed through v0.6: authenticated/RBAC boundaries, guarded mutation confirmation, ticket/SLA/audit workflow, Alembic/PostgreSQL release path, hybrid RAG + incremental Qdrant lifecycle, typed retrieval degradation, durable confirmation expiry, Redis cross-replica mutation coordination/rate limiting, and low-cardinality Prometheus + OpenTelemetry instrumentation with a deterministic local latency regression gate.
+Completed through v0.7: authenticated/RBAC boundaries, safe mutation confirmation, ticket/SLA/audit workflow, PostgreSQL/Alembic release path, Hybrid RAG + incremental Qdrant lifecycle, typed degradation, Redis distributed coordination/rate limiting, Prometheus/OpenTelemetry observability, and stateful end-to-end workflow evaluation with explicit dataset lifecycle discipline.
 
-The next highest-value milestone is **held-out end-to-end conversation/tool evaluation**, not another Agent layer: tool-selection and argument accuracy, task completion, escalation recall, hallucinated-action rate, multi-turn mutation safety and claim-level citation faithfulness. Production SLO thresholds should only be set after deployment traffic is scraped/exported through an external Prometheus/OTel stack. Redis lease renewal/outbox and HA testing should be driven by observed mutation duration/deployment topology rather than added speculatively.
+The main SupportOps feature surface is now intentionally near **feature freeze**. High-value follow-up should be evidence-driven: a separately frozen provider-backed/unseen evaluation set, production telemetry-based SLO calibration, or outbox/lease-renewal work only if external mutation latency/topology requires it. Adding more Agent roles is not a priority.
 
 ## Provenance
 
-This is a new implementation, not a renamed upstream repository. `docs/UPSTREAM.md` records open-source product/architecture references and licensing notes.
+This is a new implementation, not a renamed upstream repository. `docs/UPSTREAM.md` records open-source architecture/product references and licensing notes.
