@@ -5,9 +5,12 @@ services:
       DATABASE_URL: postgresql+psycopg://supportops:supportops@postgres:5432/supportops
       DATABASE_AUTO_CREATE_SCHEMA: "false"
       SEED_DEMO_DATA: "true"
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
       REFUND_HUMAN_REVIEW_THRESHOLD: "500"
-      RELIABILITY_BACKEND: ${RELIABILITY_BACKEND:-redis}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RELIABILITY_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
       REDIS_SOCKET_TIMEOUT_SECONDS: ${REDIS_SOCKET_TIMEOUT_SECONDS:-0.5}
       REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-supportops}
       RELIABILITY_REQUIRE_STARTUP: ${RELIABILITY_REQUIRE_STARTUP:-true}
@@ -26,12 +29,12 @@ services:
       KNOWLEDGE_BACKEND: ${KNOWLEDGE_BACKEND:-local}
       KNOWLEDGE_SOURCES_PATH: ${KNOWLEDGE_SOURCES_PATH:-}
       EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-deterministic}
-      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_BASE_URL: http://host.docker.internal:11434/v1
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
       EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-}
       EMBEDDING_TIMEOUT_SECONDS: ${EMBEDDING_TIMEOUT_SECONDS:-5}
-      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_URL: http://qdrant:6333
       QDRANT_API_KEY: ${QDRANT_API_KEY:-}
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-supportops_knowledge}
       QDRANT_TIMEOUT_SECONDS: ${QDRANT_TIMEOUT_SECONDS:-3}
@@ -39,7 +42,7 @@ services:
       RETRIEVAL_MIN_EVIDENCE_SCORE: ${RETRIEVAL_MIN_EVIDENCE_SCORE:-0.16}
       RETRIEVAL_ALLOW_SPARSE_FALLBACK: ${RETRIEVAL_ALLOW_SPARSE_FALLBACK:-true}
     ports:
-      - "8000:8000"
+      - "8002:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,6 +66,8 @@ services:
   redis:
     image: redis:7.4-alpine
     command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from time import perf_counter
 from typing import Annotated
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.auth import AuthenticationError, AuthorizationError, Principal
 from app.container import ServiceContainer, build_container
@@ -17,11 +20,16 @@ from app.domain import (
     SupportRequest,
     SupportResponse,
     TicketAssignRequest,
+    TicketMessageRequest,
+    TicketMessageRole,
+    TicketMessageView,
     TicketStatus,
     TicketTransitionRequest,
     TicketView,
 )
 from app.reliability import MutationLockBusy, ReliabilityBackendError
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 def get_principal(
@@ -110,6 +118,10 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     )
     app.state.services = services
 
+    @app.get("/", include_in_schema=False)
+    def index() -> RedirectResponse:
+        return RedirectResponse(url="/ui/")
+
     @app.middleware("http")
     async def observe_request(request: Request, call_next):
         started = perf_counter()
@@ -174,7 +186,76 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
             scope="support-message",
             limit=services.settings.support_message_rate_limit,
         )
-        return services.orchestrator.handle(request, current)
+        response = services.orchestrator.handle(request, current)
+        if response.ticket_id:
+            services.store.create_ticket_message(
+                ticket_id=response.ticket_id,
+                sender_role=TicketMessageRole.CUSTOMER,
+                sender_id=current.subject,
+                body=request.message,
+            )
+            services.store.create_ticket_message(
+                ticket_id=response.ticket_id,
+                sender_role=TicketMessageRole.ASSISTANT,
+                sender_id="supportops-ai",
+                body=response.answer,
+                context=response.model_dump(mode="json"),
+            )
+        return response
+
+    @app.get("/v1/tickets/{ticket_id}/messages", response_model=list[TicketMessageView])
+    def list_customer_ticket_messages(
+        ticket_id: str,
+        current: Annotated[Principal, Depends(get_customer_principal)],
+    ) -> list[TicketMessageView]:
+        ticket = services.store.get_ticket(ticket_id)
+        if ticket is None or ticket.customer_id != current.require_customer():
+            raise HTTPException(status_code=404, detail="ticket_not_found")
+        return services.store.list_ticket_messages(ticket_id)
+
+    @app.get("/v1/conversations/{conversation_id}/ticket", response_model=TicketView)
+    def get_customer_conversation_ticket(
+        conversation_id: str,
+        current: Annotated[Principal, Depends(get_customer_principal)],
+    ) -> TicketView:
+        ticket = services.store.find_latest_ticket_for_conversation(
+            conversation_id=conversation_id,
+            customer_id=current.require_customer(),
+        )
+        if ticket is None:
+            raise HTTPException(status_code=404, detail="ticket_not_found")
+        return ticket
+
+    @app.post(
+        "/v1/tickets/{ticket_id}/messages",
+        response_model=TicketMessageView,
+        status_code=201,
+    )
+    def send_customer_ticket_message(
+        ticket_id: str,
+        request: TicketMessageRequest,
+        current: Annotated[Principal, Depends(get_customer_principal)],
+    ) -> TicketMessageView:
+        ticket = services.store.get_ticket(ticket_id)
+        if ticket is None or ticket.customer_id != current.require_customer():
+            raise HTTPException(status_code=404, detail="ticket_not_found")
+        if ticket.status in {TicketStatus.CLOSED, TicketStatus.RESOLVED}:
+            raise HTTPException(status_code=409, detail="ticket_not_open_for_messages")
+        message = services.store.create_ticket_message(
+            ticket_id=ticket_id,
+            sender_role=TicketMessageRole.CUSTOMER,
+            sender_id=current.subject,
+            body=request.message,
+        )
+        if ticket.status is TicketStatus.PENDING_CUSTOMER:
+            services.tickets.transition(
+                ticket_id=ticket_id,
+                target=TicketStatus.ASSIGNED,
+                actor_id=current.subject,
+                trace_id=f"TRC-{uuid4().hex[:16]}",
+                note="customer_replied",
+            )
+        return message
 
     @app.post("/v1/actions/{action_id}/confirm", response_model=ConfirmationResponse)
     def confirm_action(
@@ -275,6 +356,64 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.get(
+        "/v1/agent/tickets/{ticket_id}/messages",
+        response_model=list[TicketMessageView],
+    )
+    def list_agent_ticket_messages(
+        ticket_id: str,
+        current: Annotated[Principal, Depends(get_agent_principal)],
+    ) -> list[TicketMessageView]:
+        del current
+        ticket = services.store.get_ticket(ticket_id)
+        if ticket is None:
+            raise HTTPException(status_code=404, detail="ticket_not_found")
+        return services.store.list_ticket_messages(ticket_id)
+
+    @app.post(
+        "/v1/agent/tickets/{ticket_id}/messages",
+        response_model=TicketMessageView,
+        status_code=201,
+    )
+    def send_agent_ticket_message(
+        ticket_id: str,
+        request: TicketMessageRequest,
+        current: Annotated[Principal, Depends(get_agent_principal)],
+    ) -> TicketMessageView:
+        ticket = services.store.get_ticket(ticket_id)
+        if ticket is None:
+            raise HTTPException(status_code=404, detail="ticket_not_found")
+        if ticket.status in {TicketStatus.CLOSED, TicketStatus.RESOLVED}:
+            raise HTTPException(status_code=409, detail="ticket_not_open_for_messages")
+        if ticket.assignee_id is None:
+            raise HTTPException(status_code=409, detail="ticket_not_assigned")
+        if ticket.assignee_id != current.subject and "support_admin" not in current.roles:
+            raise HTTPException(status_code=403, detail="ticket_assigned_to_another_agent")
+        message = services.store.create_ticket_message(
+            ticket_id=ticket_id,
+            sender_role=TicketMessageRole.AGENT,
+            sender_id=current.subject,
+            body=request.message,
+        )
+        if ticket.status is TicketStatus.ASSIGNED:
+            services.tickets.transition(
+                ticket_id=ticket_id,
+                target=TicketStatus.PENDING_CUSTOMER,
+                actor_id=current.subject,
+                trace_id=f"TRC-{uuid4().hex[:16]}",
+                note="agent_replied",
+            )
+        services.store.record_audit(
+            trace_id=f"TRC-{uuid4().hex[:16]}",
+            actor_id=current.subject,
+            operation="ticket.reply",
+            resource_type="ticket",
+            resource_id=ticket_id,
+            outcome="success",
+            details={"message_id": message.message_id},
+        )
+        return message
+
     @app.get("/v1/agent/audit/traces/{trace_id}", response_model=list[AuditEventView])
     def get_trace_audit(
         trace_id: str,
@@ -282,6 +421,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     ) -> list[AuditEventView]:
         return services.store.get_trace_audit(trace_id)
 
+    app.mount("/ui", StaticFiles(directory=STATIC_DIR, html=True), name="ui")
     return app
 
 

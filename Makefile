@@ -16,19 +16,20 @@ run:
 	uvicorn app.main:app --reload
 
 up:
-	docker compose up --build
+	docker compose --profile rag up --build
 
 down:
-	docker compose down
+	docker compose --profile rag down
 
 logs:
-	docker compose logs -f api
+	docker compose --profile rag logs -f api
 
 build:
 	docker build -t supportops-ai:local .
 
 check:
 	docker compose config -q
+	docker compose --profile rag config -q
 	python -m compileall app evals migrations tests
 
 

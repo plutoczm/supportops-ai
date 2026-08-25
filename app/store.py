@@ -13,6 +13,8 @@ from app.domain import (
     PendingActionKind,
     PendingActionStatus,
     PendingActionView,
+    TicketMessageRole,
+    TicketMessageView,
     TicketPriority,
     TicketStatus,
     TicketView,
@@ -64,6 +66,20 @@ class TicketEventRow(Base):
     to_status: Mapped[str] = mapped_column(String(32))
     note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class TicketMessageRow(Base):
+    __tablename__ = "ticket_messages"
+
+    message_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ticket_id: Mapped[str] = mapped_column(String(64), index=True)
+    conversation_id: Mapped[str] = mapped_column(String(128), index=True)
+    customer_id: Mapped[str] = mapped_column(String(128), index=True)
+    sender_role: Mapped[str] = mapped_column(String(32), index=True)
+    sender_id: Mapped[str] = mapped_column(String(128), index=True)
+    body: Mapped[str] = mapped_column(String(8000))
+    context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class PendingActionRow(Base):
@@ -183,6 +199,25 @@ class SupportStore:
             row = session.get(TicketRow, ticket_id)
             return self._to_ticket(row) if row else None
 
+    def find_latest_ticket_for_conversation(
+        self,
+        *,
+        conversation_id: str,
+        customer_id: str,
+    ) -> TicketView | None:
+        with self._session() as session:
+            statement = (
+                select(TicketRow)
+                .where(
+                    TicketRow.conversation_id == conversation_id,
+                    TicketRow.customer_id == customer_id,
+                )
+                .order_by(TicketRow.created_at.desc())
+                .limit(1)
+            )
+            row = session.scalar(statement)
+            return self._to_ticket(row) if row else None
+
     def list_tickets(self, status: TicketStatus | None = None) -> list[TicketView]:
         with self._session() as session:
             statement = select(TicketRow).order_by(TicketRow.created_at.desc())
@@ -246,6 +281,42 @@ class SupportStore:
         if ticket is None:
             raise RuntimeError("ticket_transition_failed")
         return ticket
+
+    def create_ticket_message(
+        self,
+        *,
+        ticket_id: str,
+        sender_role: TicketMessageRole,
+        sender_id: str,
+        body: str,
+        context: dict[str, Any] | None = None,
+    ) -> TicketMessageView:
+        with self._session.begin() as session:
+            ticket = session.get(TicketRow, ticket_id)
+            if ticket is None:
+                raise KeyError(ticket_id)
+            row = TicketMessageRow(
+                message_id=f"TMSG-{uuid4().hex[:12].upper()}",
+                ticket_id=ticket.ticket_id,
+                conversation_id=ticket.conversation_id,
+                customer_id=ticket.customer_id,
+                sender_role=sender_role.value,
+                sender_id=sender_id,
+                body=body,
+                context=context or {},
+                created_at=datetime.now(UTC),
+            )
+            session.add(row)
+        return self._to_ticket_message(row)
+
+    def list_ticket_messages(self, ticket_id: str) -> list[TicketMessageView]:
+        with self._session() as session:
+            statement = (
+                select(TicketMessageRow)
+                .where(TicketMessageRow.ticket_id == ticket_id)
+                .order_by(TicketMessageRow.created_at.asc(), TicketMessageRow.message_id.asc())
+            )
+            return [self._to_ticket_message(row) for row in session.scalars(statement).all()]
 
     def create_pending_action(
         self,
@@ -479,6 +550,20 @@ class SupportStore:
             result=dict(row.result) if row.result else None,
             created_at=cls._ensure_utc(row.created_at),
             expires_at=cls._ensure_utc(row.expires_at),
+        )
+
+    @classmethod
+    def _to_ticket_message(cls, row: TicketMessageRow) -> TicketMessageView:
+        return TicketMessageView(
+            message_id=row.message_id,
+            ticket_id=row.ticket_id,
+            conversation_id=row.conversation_id,
+            customer_id=row.customer_id,
+            sender_role=TicketMessageRole(row.sender_role),
+            sender_id=row.sender_id,
+            body=row.body,
+            context=dict(row.context or {}),
+            created_at=cls._ensure_utc(row.created_at),
         )
 
     @staticmethod

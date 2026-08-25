@@ -49,6 +49,12 @@ class TicketPriority(StrEnum):
     LOW = "low"
 
 
+class TicketMessageRole(StrEnum):
+    CUSTOMER = "customer"
+    ASSISTANT = "assistant"
+    AGENT = "agent"
+
+
 class SupportRequest(BaseModel):
     conversation_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=8000)
@@ -102,6 +108,18 @@ class TicketView(BaseModel):
     updated_at: datetime
 
 
+class TicketMessageView(BaseModel):
+    message_id: str
+    ticket_id: str
+    conversation_id: str
+    customer_id: str
+    sender_role: TicketMessageRole
+    sender_id: str
+    body: str
+    context: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
 class PendingActionView(BaseModel):
     action_id: str
     conversation_id: str
@@ -151,6 +169,10 @@ class TicketAssignRequest(BaseModel):
 class TicketTransitionRequest(BaseModel):
     status: TicketStatus
     note: str | None = Field(default=None, max_length=1000)
+
+
+class TicketMessageRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
 
 
 class AuditEventView(BaseModel):

@@ -45,12 +45,13 @@ The architecture intentionally does **not** make Redis the system of record.
 ### PostgreSQL owns durable facts
 
 - order/ticket state;
+- customer, AI and assigned-agent ticket messages;
 - pending action kind, payload and status;
 - `created_at` and durable `expires_at`;
 - action receipt keyed by the action/idempotency key;
 - audit history.
 
-Alembic revision `20260814_0002` adds the pending-action lifetime fields and indexes `expires_at`. Existing pre-v0.5 pending rows are backfilled to immediate expiry instead of being granted a new unbounded confirmation window.
+Alembic revision `20260814_0002` adds the pending-action lifetime fields and indexes `expires_at`. Existing pre-v0.5 pending rows are backfilled to immediate expiry instead of being granted a new unbounded confirmation window. Revision `20260825_0003` adds durable `ticket_messages` for customer, AI and human-agent handoff conversations.
 
 ### Redis owns coordination/control-plane state
 
@@ -143,9 +144,22 @@ Versioned bundled knowledge records are deterministically chunked into stable `d
 
 The local deterministic vector is a regression representation, not a semantic embedding model. Qdrant integration uses a real service but does not claim cluster HA or external-model semantic quality.
 
-## Human workflow and audit
+## Human workflow, ticket messages and audit
 
-Tickets maintain priority, assignee, SLA deadline and validated state transitions. Business tools, policy decisions, knowledge degradation, action preparation/expiry/cancellation/execution and ticket transitions emit durable trace-linked audit records.
+Tickets maintain priority, assignee, SLA deadline and validated state transitions. A handoff stores
+the initiating customer request and AI handoff response as ticket messages. The assigned agent can
+open the conversation and send a customer-visible reply; the reply moves an assigned ticket to
+`pending_customer`. A customer reply moves it back to `assigned`. Closed and resolved tickets
+reject new messages.
+
+Ticket message ownership is derived from the server-side ticket record. Customer reads and writes
+require the ticket's `customer_id`; agents cannot reply until assigned and cannot reply to a
+ticket assigned to another agent (except a `support_admin`). This prevents a client from selecting
+another customer's conversation ID. Internal ticket transition notes remain separate from
+customer-visible messages.
+
+Business tools, policy decisions, knowledge degradation, action preparation/expiry/cancellation/
+execution, ticket transitions and agent message delivery emit durable trace-linked audit records.
 
 ## Release/CI contract
 

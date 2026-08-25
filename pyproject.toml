@@ -39,7 +39,7 @@ rag = [
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["data/*.json"]
+app = ["data/*.json", "static/*"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
